@@ -1,0 +1,17 @@
+[Unit]
+Description=Lyrics Status — Spotify to Discord (Raspberry Pi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=/home/__USER__/lyrics-status/raspberry
+ExecStart=/usr/bin/python3 /home/__USER__/lyrics-status/raspberry/lyrics_status.py
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

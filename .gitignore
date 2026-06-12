@@ -1,0 +1,5 @@
+# Fichiers contenant des tokens/secrets — ne jamais committer
+raspberry\config.json
+raspberry\spotify_token.json
+raspberry\__pycache__/
+raspberry\*.pyc
