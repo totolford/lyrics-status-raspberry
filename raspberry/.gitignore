@@ -1,0 +1,7 @@
+# Fichiers contenant des tokens/secrets — ne jamais committer
+config.json
+spotify_token.json
+# Environnement virtuel Python
+venv/
+__pycache__/
+*.pyc

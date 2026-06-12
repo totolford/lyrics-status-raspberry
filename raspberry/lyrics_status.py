@@ -4,6 +4,7 @@ import time
 import re
 import sys
 import base64
+import threading
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ TOKEN_PATH  = Path(__file__).parent / 'spotify_token.json'
 
 SPOTIFY_POLL_INTERVAL = 5.0   # secondes entre chaque appel API Spotify
 LYRIC_INTERVAL        = 0.15  # secondes entre chaque mise à jour de la parole
+PREFETCH_COUNT        = 5     # nombre de prochaines chansons à pré-télécharger
 
 # ── ITALIC UNICODE ────────────────────────────────────────────────────────────
 
@@ -55,6 +57,7 @@ class SpotifyToken:
         self.access_token  = None
         self.expires_at    = 0.0
         self.refresh_token = None
+        self._lock         = threading.Lock()
         self._load()
 
     def _load(self):
@@ -83,10 +86,11 @@ class SpotifyToken:
             print(f"[WARN] Impossible de sauvegarder le token: {e}", flush=True)
 
     def get(self):
-        if time.time() < self.expires_at - 60:
+        with self._lock:
+            if time.time() < self.expires_at - 60:
+                return self.access_token
+            self._refresh()
             return self.access_token
-        self._refresh()
-        return self.access_token
 
     def _refresh(self):
         creds = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
@@ -127,6 +131,39 @@ def fetch_currently_playing(token):
         print(f"[WARN] Spotify réseau: {e}", flush=True)
     return None
 
+def fetch_queue(token):
+    """Retourne la liste des prochaines chansons dans la file d'attente."""
+    try:
+        r = requests.get(
+            'https://api.spotify.com/v1/me/player/queue',
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            return r.json().get('queue', [])
+    except Exception:
+        pass
+    return []
+
+# ── LYRICS CACHE ──────────────────────────────────────────────────────────────
+
+# Clé : track_id  |  Valeur : lyrics_data (dict) ou None si introuvable
+_lyrics_cache      = {}
+_cache_lock        = threading.Lock()
+_prefetch_in_progress = set()  # track_ids en cours de téléchargement
+
+def cache_get(track_id):
+    with _cache_lock:
+        return _lyrics_cache.get(track_id, ...)  # ... = absent du cache
+
+def cache_set(track_id, data):
+    with _cache_lock:
+        _lyrics_cache[track_id] = data
+        # Limite à 200 entrées pour éviter de saturer la RAM du Pi Zero
+        if len(_lyrics_cache) > 200:
+            oldest = next(iter(_lyrics_cache))
+            del _lyrics_cache[oldest]
+
 # ── LYRICS (lrclib.net) ───────────────────────────────────────────────────────
 
 def _parse_lrc(lrc_text):
@@ -152,35 +189,75 @@ def _try_lrclib_item(item):
             return {'type': 'unsynced', 'lines': raw}
     return None
 
-def fetch_lyrics(track_name, artist_name, duration_ms):
+def fetch_lyrics(track_id, track_name, artist_name, duration_ms):
+    """Télécharge les paroles, en vérifiant le cache d'abord."""
+    cached = cache_get(track_id)
+    if cached is not ...:
+        return cached  # None = introuvable (déjà tenté), dict = trouvé
+
     params = {'track_name': track_name}
     if artist_name:
         params['artist_name'] = artist_name
     if duration_ms:
         params['duration'] = duration_ms // 1000
 
+    result = None
     try:
         r = requests.get('https://lrclib.net/api/get', params=params, timeout=12)
         if r.status_code == 200:
             result = _try_lrclib_item(r.json())
-            if result:
-                return result
     except Exception:
         pass
 
-    # Fallback: recherche
-    try:
-        q = f"{artist_name} {track_name}" if artist_name else track_name
-        r = requests.get('https://lrclib.net/api/search', params={'q': q}, timeout=12)
-        if r.status_code == 200:
-            for item in r.json():
-                result = _try_lrclib_item(item)
-                if result:
-                    return result
-    except Exception:
-        pass
+    if not result:
+        try:
+            q = f"{artist_name} {track_name}" if artist_name else track_name
+            r = requests.get('https://lrclib.net/api/search', params={'q': q}, timeout=12)
+            if r.status_code == 200:
+                for item in r.json():
+                    result = _try_lrclib_item(item)
+                    if result:
+                        break
+        except Exception:
+            pass
 
-    return None
+    cache_set(track_id, result)
+    return result
+
+def prefetch_queue(sp_token):
+    """Télécharge les paroles des prochaines chansons en arrière-plan."""
+    token = sp_token.get()
+    queue = fetch_queue(token)
+    if not queue:
+        return
+
+    to_fetch = []
+    for track in queue[:PREFETCH_COUNT]:
+        tid = track.get('id')
+        if not tid:
+            continue
+        cached = cache_get(tid)
+        if cached is ... and tid not in _prefetch_in_progress:
+            to_fetch.append(track)
+
+    if not to_fetch:
+        return
+
+    print(f"[PREFETCH] {len(to_fetch)} chanson(s) en file d'attente...", flush=True)
+
+    for track in to_fetch:
+        tid         = track.get('id')
+        tname       = track.get('name', '')
+        artist_name = track['artists'][0]['name'] if track.get('artists') else ''
+        duration_ms = track.get('duration_ms', 0)
+
+        _prefetch_in_progress.add(tid)
+        result = fetch_lyrics(tid, tname, artist_name, duration_ms)
+        _prefetch_in_progress.discard(tid)
+
+        status = f"✓ ({result['type']})" if result else "✗ introuvable"
+        print(f"  [PREFETCH] {tname} — {artist_name} : {status}", flush=True)
+        time.sleep(0.3)  # petit délai pour ne pas surcharger lrclib.net
 
 def get_active_lyric(lines, progress_ms, offset_ms):
     target = progress_ms + offset_ms
@@ -235,7 +312,6 @@ def main():
 
     print("=== Lyrics Status (Raspberry) démarré ===", flush=True)
 
-    # État de lecture estimé localement
     api_progress_ms  = 0
     api_fetch_time   = 0.0
     api_is_playing   = False
@@ -245,7 +321,6 @@ def main():
     last_sent_status = None
     paused_sent      = False
     idle_sent        = False
-
     last_spotify_poll = 0.0
 
     while True:
@@ -269,14 +344,14 @@ def main():
                 continue
 
             idle_sent = False
-            track         = playing['item']
-            track_id      = track['id']
-            track_name    = track['name']
-            artist_name   = track['artists'][0]['name'] if track.get('artists') else ''
-            duration_ms   = track['duration_ms']
-            api_progress_ms  = playing['progress_ms']
-            api_fetch_time   = time.time()
-            api_is_playing   = playing['is_playing']
+            track        = playing['item']
+            track_id     = track['id']
+            track_name   = track['name']
+            artist_name  = track['artists'][0]['name'] if track.get('artists') else ''
+            duration_ms  = track['duration_ms']
+            api_progress_ms = playing['progress_ms']
+            api_fetch_time  = time.time()
+            api_is_playing  = playing['is_playing']
 
             # ── Changement de chanson ─────────────────────────────────────────
             if track_id != current_track_id:
@@ -286,12 +361,20 @@ def main():
                 last_sent_status = None
                 label = f"{track_name} — {artist_name}" if artist_name else track_name
                 print(f"[CHANSON] {label}", flush=True)
-                lyrics_data = fetch_lyrics(track_name, artist_name, duration_ms)
+
+                lyrics_data = fetch_lyrics(track_id, track_name, artist_name, duration_ms)
                 if lyrics_data:
-                    count = len(lyrics_data['lines'])
-                    print(f"[PAROLES] ✓ {count} lignes ({lyrics_data['type']})", flush=True)
+                    src = "cache" if cache_get(track_id) is not ... else "lrclib"
+                    print(f"[PAROLES] ✓ {len(lyrics_data['lines'])} lignes ({lyrics_data['type']}, {src})", flush=True)
                 else:
                     print("[PAROLES] ✗ Introuvables", flush=True)
+
+                # Pré-téléchargement de la file d'attente en arrière-plan
+                threading.Thread(
+                    target=prefetch_queue,
+                    args=(sp_token,),
+                    daemon=True,
+                ).start()
 
         # ── Pas de lecture active ─────────────────────────────────────────────
         if not api_is_playing:

@@ -67,7 +67,7 @@ Contrairement au userscript navigateur, ce daemon utilise l'**API officielle Spo
 ### Cloner le projet
 
 ```bash
-git clone https://github.com/TON_PSEUDO/lyrics-status.git ~/lyrics-status
+git clone https://github.com/totolford/lyrics-status-Best-raspberry.git ~/lyrics-status
 cd ~/lyrics-status/raspberry
 ```
 
