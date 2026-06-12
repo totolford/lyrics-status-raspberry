@@ -39,7 +39,7 @@ Contrairement au userscript navigateur, ce daemon utilise l'**API officielle Spo
 4. Remplis les champs :
    - **App name** : `Lyrics Status` (ou ce que tu veux)
    - **App description** : ce que tu veux
-   - **Redirect URIs** : `https://localhost:8888/callback` ← **important, bien mettre https**
+   - **Redirect URIs** : `https://example.com` ← **copie exactement ça**
    - **APIs used** : coche `Web API`
 5. Accepte les conditions et clique **Save**
 6. Sur la page de ton app, clique sur **Settings**
@@ -49,16 +49,16 @@ Contrairement au userscript navigateur, ce daemon utilise l'**API officielle Spo
 
 ## Étape 2 — Récupérer ton token Discord
 
-> ⚠ Ton token Discord donne un accès complet à ton compte. Ne le partage jamais.
+> ⚠ Ton token Discord donne un accès complet à ton compte. Ne le partage **jamais**.
 
-1. Ouvre Discord dans ton **navigateur** (pas l'application)
+1. Ouvre Discord dans ton **navigateur** (pas l'application de bureau)
 2. Appuie sur `F12` pour ouvrir les DevTools
-3. Va dans l'onglet **Console**
-4. Colle cette commande et appuie sur Entrée :
-   ```js
-   webpackChunkdiscord_app.push([[Math.random()],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]);m.find(m=>m?.exports?.default?.getToken).exports.default.getToken()
-   ```
-5. Copie le token affiché (une longue chaîne de caractères)
+3. Va dans l'onglet **Réseau** (Network)
+4. Dans la barre de filtre, tape `api`
+5. Clique sur n'importe quel channel ou serveur pour générer une requête
+6. Clique sur une requête vers `discord.com/api/...` dans la liste
+7. Ouvre l'onglet **En-têtes** (Headers) → section **En-têtes de la requête**
+8. Copie la valeur du champ **`authorization`** (commence par `MT...` ou similaire)
 
 ---
 
@@ -146,8 +146,8 @@ Le script affiche une URL. Voici la procédure (fonctionne sur Pi headless comme
 1. Copie l'URL affichée dans le terminal
 2. Ouvre-la dans un navigateur (ton PC, ton téléphone, peu importe)
 3. Connecte-toi à Spotify et accepte les permissions
-4. Tu seras redirigé vers `https://localhost:8888/callback?code=...` — le navigateur affiche une **erreur de connexion**, c'est **normal**
-5. Copie l'URL complète depuis la barre d'adresse du navigateur
+4. Tu seras redirigé vers **example.com** — la page se charge normalement
+5. Copie l'URL complète depuis la barre d'adresse (elle ressemble à `https://example.com/?code=AQ...`)
 6. Colle-la dans le terminal et appuie sur Entrée
 
 Un fichier `spotify_token.json` est créé. Le daemon peut maintenant démarrer.

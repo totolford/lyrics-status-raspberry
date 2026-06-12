@@ -4,7 +4,7 @@ Authentification Spotify (OAuth2) — à lancer une seule fois.
 Génère spotify_token.json avec le refresh token.
 
 Redirect URI à configurer dans le Spotify Developer Dashboard :
-  https://localhost:8888/callback
+  https://example.com
 """
 import json
 import base64
@@ -17,7 +17,7 @@ CONFIG_PATH = Path(__file__).parent / 'config.json'
 TOKEN_PATH  = Path(__file__).parent / 'spotify_token.json'
 
 SCOPES       = 'user-read-playback-state user-read-currently-playing'
-REDIRECT_URI = 'https://localhost:8888/callback'
+REDIRECT_URI = 'https://example.com'
 
 # ── Échange du code contre les tokens ────────────────────────────────────────
 
@@ -78,9 +78,9 @@ def main():
     print()
     print("2. Connecte-toi à Spotify et accepte les permissions.")
     print()
-    print("3. Tu seras redirigé vers une page d'ERREUR — c'est normal.")
+    print("3. Tu seras redirigé vers example.com — la page se charge normalement.")
     print("   Copie l'URL complète depuis la barre d'adresse du navigateur.")
-    print("   Elle ressemble à : https://localhost:8888/callback?code=AQ...")
+    print("   Elle ressemble a : https://example.com/?code=AQ...")
     print()
     print("─" * 60)
 
