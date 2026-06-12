@@ -15,6 +15,8 @@ TOKEN_PATH  = Path(__file__).parent / 'spotify_token.json'
 SPOTIFY_POLL_INTERVAL = 5.0   # secondes entre chaque appel API Spotify
 LYRIC_INTERVAL        = 0.15  # secondes entre chaque mise à jour de la parole
 PREFETCH_COUNT        = 5     # nombre de prochaines chansons à pré-télécharger
+SPLIT_MIN_LEN         = 60    # caractères min pour couper une parole en deux
+SPLIT_DELAY_S         = 3.5   # secondes avant d'afficher la deuxième partie
 
 # ── ITALIC UNICODE ────────────────────────────────────────────────────────────
 
@@ -29,23 +31,57 @@ def to_italic(text):
 
 # ── CENSOR ────────────────────────────────────────────────────────────────────
 
-def build_censor_regex(words):
-    parts = [re.escape(w.strip()) for w in words if w.strip()]
-    if not parts:
-        return None
-    pattern = r'(?<![a-zA-ZÀ-ÿ0-9])(' + '|'.join(parts) + r')(?![a-zA-ZÀ-ÿ0-9])'
-    try:
-        return re.compile(pattern, re.IGNORECASE)
-    except Exception:
-        return None
+_builtin_censor = []
+_censor_lock    = threading.Lock()
+_censor_regex   = None
 
-def censor_text(text, regex):
-    if not regex:
+def _rebuild_censor_regex(extra_words):
+    global _censor_regex
+    with _censor_lock:
+        all_words = set(_builtin_censor) | {w.strip().lower() for w in extra_words if w.strip()}
+        if not all_words:
+            _censor_regex = None
+            return
+        parts = [re.escape(w) for w in all_words]
+        pattern = r'(?<![a-zA-ZÀ-ÿ0-9])(' + '|'.join(parts) + r')(?![a-zA-ZÀ-ÿ0-9])'
+        try:
+            _censor_regex = re.compile(pattern, re.IGNORECASE)
+        except Exception:
+            _censor_regex = None
+
+def load_builtin_censor(extra_words):
+    """Charge la liste LDNOOBW (FR + EN) en arrière-plan puis reconstruit la regex."""
+    global _builtin_censor
+    langs = ['fr', 'en']
+    base  = 'https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/'
+    words = set()
+    for lang in langs:
+        try:
+            r = requests.get(base + lang, timeout=10)
+            if r.status_code == 200:
+                for w in r.text.split('\n'):
+                    w = w.strip().lower()
+                    if w and not w.startswith('#'):
+                        words.add(w)
+        except Exception:
+            pass
+    _builtin_censor = list(words)
+    _rebuild_censor_regex(extra_words)
+    count = len(_builtin_censor)
+    if count:
+        print(f"[CENSURE] ✓ {count} mots chargés (FR + EN)", flush=True)
+    else:
+        print("[CENSURE] ✗ Échec du chargement de la liste automatique", flush=True)
+
+def censor_text(text):
+    with _censor_lock:
+        rx = _censor_regex
+    if not rx:
         return text
-    return regex.sub('***', text)
+    return rx.sub('***', text)
 
-def get_status_string(words, censor_regex):
-    text = censor_text(words, censor_regex).replace('♪', '').strip()
+def get_status_string(words):
+    text = censor_text(words).replace('♪', '').strip()
     return f'"{to_italic(text)}"'
 
 # ── SPOTIFY TOKEN ─────────────────────────────────────────────────────────────
@@ -132,7 +168,6 @@ def fetch_currently_playing(token):
     return None
 
 def fetch_queue(token):
-    """Retourne la liste des prochaines chansons dans la file d'attente."""
     try:
         r = requests.get(
             'https://api.spotify.com/v1/me/player/queue',
@@ -147,10 +182,9 @@ def fetch_queue(token):
 
 # ── LYRICS CACHE ──────────────────────────────────────────────────────────────
 
-# Clé : track_id  |  Valeur : lyrics_data (dict) ou None si introuvable
-_lyrics_cache      = {}
-_cache_lock        = threading.Lock()
-_prefetch_in_progress = set()  # track_ids en cours de téléchargement
+_lyrics_cache         = {}
+_cache_lock           = threading.Lock()
+_prefetch_in_progress = set()
 
 def cache_get(track_id):
     with _cache_lock:
@@ -159,7 +193,6 @@ def cache_get(track_id):
 def cache_set(track_id, data):
     with _cache_lock:
         _lyrics_cache[track_id] = data
-        # Limite à 200 entrées pour éviter de saturer la RAM du Pi Zero
         if len(_lyrics_cache) > 200:
             oldest = next(iter(_lyrics_cache))
             del _lyrics_cache[oldest]
@@ -190,10 +223,9 @@ def _try_lrclib_item(item):
     return None
 
 def fetch_lyrics(track_id, track_name, artist_name, duration_ms):
-    """Télécharge les paroles, en vérifiant le cache d'abord."""
     cached = cache_get(track_id)
     if cached is not ...:
-        return cached  # None = introuvable (déjà tenté), dict = trouvé
+        return cached
 
     params = {'track_name': track_name}
     if artist_name:
@@ -225,7 +257,6 @@ def fetch_lyrics(track_id, track_name, artist_name, duration_ms):
     return result
 
 def prefetch_queue(sp_token):
-    """Télécharge les paroles des prochaines chansons en arrière-plan."""
     token = sp_token.get()
     queue = fetch_queue(token)
     if not queue:
@@ -236,38 +267,62 @@ def prefetch_queue(sp_token):
         tid = track.get('id')
         if not tid:
             continue
-        cached = cache_get(tid)
-        if cached is ... and tid not in _prefetch_in_progress:
+        if cache_get(tid) is ... and tid not in _prefetch_in_progress:
             to_fetch.append(track)
 
     if not to_fetch:
         return
 
     print(f"[PREFETCH] {len(to_fetch)} chanson(s) en file d'attente...", flush=True)
-
     for track in to_fetch:
         tid         = track.get('id')
         tname       = track.get('name', '')
         artist_name = track['artists'][0]['name'] if track.get('artists') else ''
         duration_ms = track.get('duration_ms', 0)
-
         _prefetch_in_progress.add(tid)
         result = fetch_lyrics(tid, tname, artist_name, duration_ms)
         _prefetch_in_progress.discard(tid)
-
         status = f"✓ ({result['type']})" if result else "✗ introuvable"
         print(f"  [PREFETCH] {tname} — {artist_name} : {status}", flush=True)
-        time.sleep(0.3)  # petit délai pour ne pas surcharger lrclib.net
+        time.sleep(0.3)
+
+def split_line(text):
+    """Coupe une longue parole en deux parties près du milieu, sur un espace."""
+    if len(text) <= SPLIT_MIN_LEN:
+        return [text]
+    mid   = len(text) // 2
+    left  = text.rfind(' ', 0, mid + 1)
+    right = text.find(' ', mid)
+    if left == -1 and right == -1:
+        return [text[:mid], text[mid:]]
+    if left == -1:    split_at = right
+    elif right == -1: split_at = left
+    else:             split_at = left if (mid - left) <= (right - mid) else right
+    return [text[:split_at].strip(), text[split_at:].strip()]
+
+INSTRUMENTAL_GAP_MS = 4000  # ms de silence avant/après une parole = pause instrumentale
 
 def get_active_lyric(lines, progress_ms, offset_ms):
-    target = progress_ms + offset_ms
-    active = None
-    for line in lines:
+    """Retourne (active_line_or_None, in_instrumental_gap)."""
+    target     = progress_ms + offset_ms
+    active     = None
+    active_idx = -1
+    for i, line in enumerate(lines):
         if line['time'] <= target:
-            active = line
+            active     = line
+            active_idx = i
         else:
             break
-    return active
+    next_line = lines[active_idx + 1] if 0 <= active_idx + 1 < len(lines) else None
+    if active is None:
+        # Avant la première parole
+        first_t = lines[0]['time'] if lines else 0
+        in_gap  = (first_t - target) > INSTRUMENTAL_GAP_MS
+    else:
+        past_last   = target - active['time']
+        before_next = (next_line['time'] - target) if next_line else float('inf')
+        in_gap      = past_last > INSTRUMENTAL_GAP_MS and before_next > INSTRUMENTAL_GAP_MS
+    return active, in_gap
 
 # ── DISCORD ───────────────────────────────────────────────────────────────────
 
@@ -307,26 +362,49 @@ def main():
     discord_token = config['discord']['token']
     offset_ms     = int(config.get('settings', {}).get('send_time_offset_ms', 500))
     poll_interval = float(config.get('settings', {}).get('spotify_poll_interval_s', SPOTIFY_POLL_INTERVAL))
-    censor_words  = config.get('settings', {}).get('censor_words', [])
-    censor_regex  = build_censor_regex(censor_words)
+    extra_censor  = config.get('settings', {}).get('censor_words', [])
+
+    # Chargement de la liste de censure automatique en arrière-plan
+    threading.Thread(
+        target=load_builtin_censor,
+        args=(extra_censor,),
+        daemon=True,
+    ).start()
+    _rebuild_censor_regex(extra_censor)  # applique déjà les mots perso en attendant
 
     print("=== Lyrics Status (Raspberry) démarré ===", flush=True)
 
-    api_progress_ms  = 0
-    api_fetch_time   = 0.0
-    api_is_playing   = False
-    current_track_id = None
-    lyrics_data      = None
-    current_lyric    = None
-    last_sent_status = None
-    paused_sent      = False
-    idle_sent        = False
+    api_progress_ms   = 0
+    api_fetch_time    = 0.0
+    api_is_playing    = False
+    current_track_id  = None
+    current_track_name   = ''
+    current_artist_name  = ''
+    # Conteneurs mutables partagés avec le thread de fetch
+    lyrics_result  = [None]   # [0] = lyrics_data
+    lyrics_loading = [False]  # [0] = fetch en cours
+    current_lyric     = None
+    split_parts    = []
+    split_idx      = 0
+    split_shown_at = 0.0
+    last_sent_status  = None
+    search_status_sent = False
+    paused_sent       = False
+    idle_sent         = False
     last_spotify_poll = 0.0
+
+    def _fetch_async(tid, tname, aname, dur):
+        result = fetch_lyrics(tid, tname, aname, dur)
+        if current_track_id == tid:  # la chanson n'a pas changé entre temps
+            lyrics_result[0]  = result
+            lyrics_loading[0] = False
+            tag = f"✓ {len(result['lines'])} lignes ({result['type']})" if result else "✗ Introuvables"
+            print(f"[PAROLES] {tag}", flush=True)
 
     while True:
         now = time.time()
 
-        # ── Appel API Spotify (toutes les poll_interval secondes) ────────────
+        # ── Appel API Spotify ─────────────────────────────────────────────────
         if now - last_spotify_poll >= poll_interval:
             last_spotify_poll = now
             token   = sp_token.get()
@@ -355,26 +433,41 @@ def main():
 
             # ── Changement de chanson ─────────────────────────────────────────
             if track_id != current_track_id:
-                current_track_id = track_id
-                current_lyric    = None
-                paused_sent      = False
-                last_sent_status = None
+                if current_track_id:
+                    with _cache_lock:
+                        _lyrics_cache.pop(current_track_id, None)
+                current_track_id    = track_id
+                current_track_name  = track_name
+                current_artist_name = artist_name
+                current_lyric       = None
+                split_parts         = []
+                split_idx           = 0
+                split_shown_at      = 0.0
+                paused_sent         = False
+                last_sent_status    = None
+                search_status_sent  = False
                 label = f"{track_name} — {artist_name}" if artist_name else track_name
                 print(f"[CHANSON] {label}", flush=True)
 
-                lyrics_data = fetch_lyrics(track_id, track_name, artist_name, duration_ms)
-                if lyrics_data:
-                    src = "cache" if cache_get(track_id) is not ... else "lrclib"
-                    print(f"[PAROLES] ✓ {len(lyrics_data['lines'])} lignes ({lyrics_data['type']}, {src})", flush=True)
+                cached = cache_get(track_id)
+                if cached is not ...:
+                    # Paroles déjà en cache (pré-téléchargées) : instantané
+                    lyrics_result[0]  = cached
+                    lyrics_loading[0] = False
+                    tag = f"✓ {len(cached['lines'])} lignes ({cached['type']}, cache)" if cached else "✗ Introuvables (cache)"
+                    print(f"[PAROLES] {tag}", flush=True)
                 else:
-                    print("[PAROLES] ✗ Introuvables", flush=True)
+                    # Lancement du fetch asynchrone
+                    lyrics_result[0]  = None
+                    lyrics_loading[0] = True
+                    threading.Thread(
+                        target=_fetch_async,
+                        args=(track_id, track_name, artist_name, duration_ms),
+                        daemon=True,
+                    ).start()
 
-                # Pré-téléchargement de la file d'attente en arrière-plan
-                threading.Thread(
-                    target=prefetch_queue,
-                    args=(sp_token,),
-                    daemon=True,
-                ).start()
+                # Pré-téléchargement de la file d'attente
+                threading.Thread(target=prefetch_queue, args=(sp_token,), daemon=True).start()
 
         # ── Pas de lecture active ─────────────────────────────────────────────
         if not api_is_playing:
@@ -391,10 +484,22 @@ def main():
         elapsed_ms  = (time.time() - api_fetch_time) * 1000
         progress_ms = int(api_progress_ms + elapsed_ms)
 
-        # ── Pas de paroles : affiche titre + artiste ──────────────────────────
-        if not lyrics_data:
-            title  = to_italic(censor_text(track_name or '', censor_regex))
-            artist = f" — {to_italic(censor_text(artist_name, censor_regex))}" if artist_name else ''
+        # ── Fetch en cours : envoie 🔍 une seule fois ─────────────────────────
+        if lyrics_loading[0]:
+            if not search_status_sent:
+                search_status_sent = True
+                title  = to_italic(censor_text(current_track_name or ''))
+                artist = f" — {to_italic(censor_text(current_artist_name))}" if current_artist_name else ''
+                status = f"🔍 {title}{artist}"
+                set_discord_status(discord_token, status)
+                last_sent_status = status
+            time.sleep(LYRIC_INTERVAL)
+            continue
+
+        # ── Pas de paroles trouvées ───────────────────────────────────────────
+        if not lyrics_result[0]:
+            title  = to_italic(censor_text(current_track_name or ''))
+            artist = f" — {to_italic(censor_text(current_artist_name))}" if current_artist_name else ''
             status = f"♪ {title}{artist} ♪"
             if status != last_sent_status:
                 set_discord_status(discord_token, status)
@@ -402,10 +507,10 @@ def main():
             time.sleep(LYRIC_INTERVAL)
             continue
 
-        # ── Paroles non synchronisées : affiche titre ─────────────────────────
-        if lyrics_data['type'] == 'unsynced':
-            title  = to_italic(censor_text(track_name or '', censor_regex))
-            artist = f" — {to_italic(censor_text(artist_name, censor_regex))}" if artist_name else ''
+        # ── Paroles non synchronisées ─────────────────────────────────────────
+        if lyrics_result[0]['type'] == 'unsynced':
+            title  = to_italic(censor_text(current_track_name or ''))
+            artist = f" — {to_italic(censor_text(current_artist_name))}" if current_artist_name else ''
             status = f"♪ {title}{artist} ♪"
             if status != last_sent_status:
                 set_discord_status(discord_token, status)
@@ -414,14 +519,34 @@ def main():
             continue
 
         # ── Paroles synchronisées ─────────────────────────────────────────────
-        active = get_active_lyric(lyrics_data['lines'], progress_ms, offset_ms)
-        if active and active is not current_lyric:
-            current_lyric = active
-            status = get_status_string(active['words'], censor_regex)
+        active, in_gap = get_active_lyric(lyrics_result[0]['lines'], progress_ms, offset_ms)
+
+        if in_gap:
+            split_parts    = []
+            split_idx      = 0
+            split_shown_at = 0.0
+            instr = '♪ ♪ ♪'
+            if instr != last_sent_status:
+                set_discord_status(discord_token, instr)
+                last_sent_status = instr
+        elif active and active is not current_lyric:
+            current_lyric  = active
+            split_parts    = split_line(active['words'])
+            split_idx      = 0
+            split_shown_at = time.time()
+            status = get_status_string(split_parts[0])
             if status != last_sent_status:
                 set_discord_status(discord_token, status)
                 last_sent_status = status
                 print(f"  → {active['words'][:70]}", flush=True)
+        elif active and active is current_lyric and split_idx == 0 and len(split_parts) > 1:
+            if time.time() - split_shown_at >= SPLIT_DELAY_S:
+                split_idx      = 1
+                split_shown_at = time.time()
+                status = get_status_string(split_parts[1])
+                if status != last_sent_status:
+                    set_discord_status(discord_token, status)
+                    last_sent_status = status
 
         time.sleep(LYRIC_INTERVAL)
 

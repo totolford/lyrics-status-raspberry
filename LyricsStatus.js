@@ -6,7 +6,9 @@
 // @author       OvalQuilter | OQ project
 // @match        *://open.spotify.com/*
 // @icon         https://raw.githubusercontent.com/OvalQuilter/lyrics-status/main/Logo.png
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      raw.githubusercontent.com
 // @run-at       document-start
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js
 // ==/UserScript==
@@ -21,28 +23,29 @@ function _captureTokenResponse(data) {
 }
 
 (function() {
-    const _fetch = window.fetch;
-    window.fetch = function(url, init) {
-        if (url instanceof Request) _captureToken(url.headers.get('authorization'));
+    const _win   = unsafeWindow;
+    const _fetch = _win.fetch;
+    _win.fetch = function(url, init) {
+        if (url instanceof _win.Request) _captureToken(url.headers.get('authorization'));
         if (init && init.headers) {
-            _captureToken(init.headers instanceof Headers
+            _captureToken(init.headers instanceof _win.Headers
                 ? init.headers.get('authorization')
                 : (init.headers['authorization'] || init.headers['Authorization']));
         }
         const result = _fetch.apply(this, arguments);
-        const urlStr = typeof url === 'string' ? url : (url instanceof Request ? url.url : '');
+        const urlStr = typeof url === 'string' ? url : (url instanceof _win.Request ? url.url : '');
         if (urlStr.includes('get_access_token')) {
             result.then(r => r.clone().json().then(_captureTokenResponse).catch(() => {})).catch(() => {});
         }
         return result;
     };
-    const _setHeader = XMLHttpRequest.prototype.setRequestHeader;
-    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    const _setHeader = _win.XMLHttpRequest.prototype.setRequestHeader;
+    _win.XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
         if (name.toLowerCase() === 'authorization') _captureToken(value);
         return _setHeader.call(this, name, value);
     };
-    if (navigator.serviceWorker) {
-        navigator.serviceWorker.addEventListener('message', function(event) {
+    if (_win.navigator.serviceWorker) {
+        _win.navigator.serviceWorker.addEventListener('message', function(event) {
             try {
                 const data = event.data;
                 if (!data) return;
@@ -378,7 +381,11 @@ let stopped          = true,
         noLyricsStatusSent:   false,
         searchingStatusSent:  false,
         ended:                () => playbackState.trackProgress >= playbackState.trackDuration,
-        isPlaying:            false
+        isPlaying:            false,
+        splitParts:           [],
+        splitIdx:             0,
+        splitShownAt:         0,
+        instrumentalSent:     false
     },
     requestsHistory = [],
     consoleLogs     = [];
@@ -521,6 +528,19 @@ function getStatusString(lyrics) {
     return '"' + toItalic(censorText(lyrics).replace(/♪/g, '').trim()) + '"';
 }
 
+function splitLine(text) {
+    if (text.length <= 60) return [text];
+    var mid = Math.floor(text.length / 2);
+    var ls  = text.lastIndexOf(' ', mid);
+    var rs  = text.indexOf(' ', mid);
+    var at;
+    if (ls === -1 && rs === -1) return [text.slice(0, mid), text.slice(mid)];
+    if (ls === -1)      at = rs;
+    else if (rs === -1) at = ls;
+    else                at = (mid - ls) <= (rs - mid) ? ls : rs;
+    return [text.slice(0, at).trim(), text.slice(at).trim()];
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── TOKEN / SPOTIFY ──────────────────────────────────────────────────────────
@@ -554,7 +574,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function tryGetTokenFromSW() {
     return new Promise(resolve => {
-        const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+        const sw = unsafeWindow.navigator.serviceWorker && unsafeWindow.navigator.serviceWorker.controller;
         if (!sw) { resolve(); return; }
         const mc = new MessageChannel();
         const t  = setTimeout(resolve, 3000);
@@ -787,6 +807,7 @@ function updatePlaybackState() {
     }
 
     if (playbackState.trackId !== trackId && trackName) {
+        if (playbackState.trackId) lyricsCache.delete(playbackState.trackId);
         dbLyr.text('Recherche...');
         cardLyric.text('🔍 Recherche de paroles...');
         playbackState.trackName           = trackName;
@@ -799,6 +820,10 @@ function updatePlaybackState() {
         playbackState.currentLyrics       = null;
         playbackState.noLyricsStatusSent  = false;
         playbackState.searchingStatusSent = false;
+        playbackState.splitParts          = [];
+        playbackState.splitIdx            = 0;
+        playbackState.splitShownAt        = 0;
+        playbackState.instrumentalSent    = false;
         waitingStatusSet                  = false;
         dbSong.text(trackName + (trackAuthor ? ' — ' + trackAuthor : ''));
         cardTrack.text(trackName + (trackAuthor ? ' — ' + trackAuthor : ''));
@@ -922,19 +947,47 @@ function changeStatus() {
         if (activeIdx < 0) return res();
         const activeLyric = playbackState.lyrics[activeIdx];
 
+        // Instrumental gap detection
+        const nextIdx    = activeIdx + 1;
+        const pastLast   = target - activeLyric.time;
+        const beforeNext = nextIdx < playbackState.lyrics.length
+            ? playbackState.lyrics[nextIdx].time - target
+            : Infinity;
+        const inGap = pastLast > 4000 && beforeNext > 4000;
+
+        if (inGap) {
+            cardLyric.text('♪ ♪ ♪');
+            playbackState.splitParts = [];
+            playbackState.splitIdx   = 0;
+            if (!playbackState.instrumentalSent) {
+                playbackState.instrumentalSent = true;
+                changeStatusRequest(settings.token, '♪ ♪ ♪');
+            }
+            return res();
+        }
+        playbackState.instrumentalSent = false;
+
         cardLyric.text(activeLyric.words);
 
-        if (activeLyric === playbackState.currentLyrics) return res();
-
-        // Block backward movement only if it looks like DOM jitter (<1500ms)
-        // Larger backward jumps are treated as real user seeks
-        if (playbackState.currentLyrics && activeLyric.time < playbackState.currentLyrics.time) {
-            if (playbackState.currentLyrics.time - activeLyric.time < 1500) return res();
-            playbackState.currentLyrics = null;
+        if (activeLyric !== playbackState.currentLyrics) {
+            // Block backward movement only if it looks like DOM jitter (<1500ms)
+            if (playbackState.currentLyrics && activeLyric.time < playbackState.currentLyrics.time) {
+                if (playbackState.currentLyrics.time - activeLyric.time < 1500) return res();
+                playbackState.currentLyrics = null;
+            }
+            playbackState.currentLyrics = activeLyric;
+            var parts = splitLine(activeLyric.words);
+            playbackState.splitParts   = parts;
+            playbackState.splitIdx     = 0;
+            playbackState.splitShownAt = Date.now();
+            changeStatusRequest(settings.token, getStatusString(parts[0]));
+        } else if (playbackState.splitIdx === 0 && playbackState.splitParts.length > 1) {
+            if (Date.now() - playbackState.splitShownAt >= 3500) {
+                playbackState.splitIdx     = 1;
+                playbackState.splitShownAt = Date.now();
+                changeStatusRequest(settings.token, getStatusString(playbackState.splitParts[1]));
+            }
         }
-
-        playbackState.currentLyrics = activeLyric;
-        changeStatusRequest(settings.token, getStatusString(activeLyric.words));
         res();
     });
 }
@@ -942,21 +995,31 @@ function changeStatus() {
 // ── INIT ─────────────────────────────────────────────────────────────────────
 
 (async function loadBuiltinCensorList() {
-    const langs  = ['fr', 'en'];
-    const base   = 'https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/';
-    const words  = new Set();
-    let loaded   = 0;
+    const langs = ['fr', 'en'];
+    const base  = 'https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/';
+    const words = new Set();
+
+    function gmGet(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method:    'GET',
+                url:       url,
+                timeout:   8000,
+                onload:    r => resolve(r.responseText),
+                onerror:   () => reject(new Error('network')),
+                ontimeout: () => reject(new Error('timeout')),
+            });
+        });
+    }
+
     for (const lang of langs) {
         try {
-            const r = await fetch(base + lang);
-            if (r.ok) {
-                const text = await r.text();
-                text.split('\n').map(w => w.trim().toLowerCase()).filter(w => w && !w.startsWith('#'))
-                    .forEach(w => words.add(w));
-                loaded++;
-            }
+            const text = await gmGet(base + lang);
+            text.split('\n').map(w => w.trim().toLowerCase()).filter(w => w && !w.startsWith('#'))
+                .forEach(w => words.add(w));
         } catch(e) {}
     }
+
     builtinCensorList = [...words];
     rebuildCensorRegex();
     const el = document.getElementById('cf-censor-status');
@@ -1002,7 +1065,8 @@ if (settings.autorun) {
                 trackDuration: 0, trackProgress: 0,
                 lyrics: [], currentLyrics: null,
                 hasLyrics: false, lyricsLoading: false,
-                noLyricsStatusSent: false, searchingStatusSent: false, isPlaying: false
+                noLyricsStatusSent: false, searchingStatusSent: false, isPlaying: false,
+                splitParts: [], splitIdx: 0, splitShownAt: 0, instrumentalSent: false
             });
             dbSong.text('—'); dbProg.text('—'); dbLyr.text('—');
             dbDisc.text('—'); dbAvg2.text('—'); dbAvg10.text('—');
