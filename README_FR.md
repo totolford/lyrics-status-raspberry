@@ -32,7 +32,7 @@
 
 ## Aperçu
 
-<video src="img/ExRaspberry.mp4" controls width="700"></video>
+<video src="https://github.com/user-attachments/assets/cf11d226-cd3a-4393-91d5-4e2305ad6caa" controls width="700"></video>
 
 ---
 
