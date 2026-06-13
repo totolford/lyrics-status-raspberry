@@ -1,12 +1,17 @@
+<p align="center">
+  <img src="img/Logo.png" width="90" alt="Lyrics Status">
+</p>
+
+<h1 align="center">Lyrics Status — Raspberry Pi</h1>
+
+<p align="center">
+  Synchronise ton statut personnalisé Discord avec les paroles en temps réel de la chanson que tu écoutes sur Spotify.<br>
+  Fonctionne avec <strong>n'importe quel appareil de lecture</strong> — téléphone, appli bureau, console, TV connectée.
+</p>
+
+---
+
 > **Spotify Premium requis.** Les paroles synchronisées sont une fonctionnalité réservée aux abonnés Premium.
-
-# Lyrics Status
-
-Synchronise ton statut personnalisé Discord avec les paroles en temps réel de la chanson que tu écoutes sur Spotify.
-
-Deux versions disponibles : un **userscript navigateur** (PC uniquement) et un **daemon Raspberry Pi** qui fonctionne avec n'importe quel appareil de lecture.
-
-![Aperçu](https://user-images.githubusercontent.com/69106951/178853744-db356ac8-93cb-4c2a-acd2-7fb4329163c9.gif)
 
 ---
 
@@ -25,122 +30,57 @@ Deux versions disponibles : un **userscript navigateur** (PC uniquement) et un *
 
 ---
 
-## Fonctionnalités
+## Aperçu
 
-### Les deux versions
-- Statut Discord mis à jour en temps réel avec la parole en cours
-- Paroles récupérées depuis **[lrclib.net](https://lrclib.net)** (gratuit, sans compte)
-- Paroles synchronisées (timestamps LRC) et non-synchronisées (texte brut, répartition uniforme)
-- Cache de paroles — une chanson déjà vue se charge instantanément
-- **Formats de statut :**
-  - En lecture avec paroles : `"𝘵𝘦𝘹𝘵𝘦 𝘥𝘦𝘴 𝘱𝘢𝘳𝘰𝘭𝘦𝘴"` (italique Unicode)
-  - En lecture sans paroles : `♪ 𝘛𝘪𝘵𝘳𝘦 — 𝘈𝘳𝘵𝘪𝘴𝘵𝘦 ♪`
-  - En pause : `⏸ En pause`
-  - Rien en cours : `Connecté`
-- Liste de censure intégrée (FR + EN, 800+ mots de LDNOOBW) + mots personnalisés
-- Décalage d'envoi configurable (ms)
-
-### Userscript PC uniquement
-- Panneau flottant dans le navigateur (déplaçable, redimensionnable)
-- 4 onglets : **Run**, **Config**, **Debug**, **Paroles**
-- Bouton de vérification du token + bouton de test du statut
-- Slider d'opacité, toggle de démarrage automatique
-- Onglet Debug : info chanson, progression, temps de réponse Discord (moy. 2 & 10)
-- Onglet Paroles : liste par chanson avec indicateurs ✓/✗
-- Touche `Échap` pour masquer/afficher le panneau
-
-### Daemon Raspberry Pi uniquement
-- **Fonctionne avec n'importe quel appareil** — téléphone, application bureau, console, TV connectée
-- Tourne 24h/24 en tant que **service systemd** — démarre automatiquement au boot, résiste à la fermeture du terminal
-- **Pré-télécharge les paroles des 5 prochaines chansons** de la file d'attente en arrière-plan — aucun délai au début de chaque chanson
-- OAuth2 Spotify officiel — le token se rafraîchit automatiquement, n'expire jamais
-- Cache limité à 200 chansons pour rester léger sur les 512 Mo de RAM du Pi Zero 2W
+<video src="img/ExRaspberry.mp4" controls width="700"></video>
 
 ---
 
-## PC vs Raspberry Pi — Quelle version choisir ?
+## Version navigateur vs version Raspberry Pi
 
-| | Userscript PC | Daemon Raspberry Pi |
+Ce projet est un fork du userscript navigateur original [OvalQuilter/lyrics-status](https://github.com/OvalQuilter/lyrics-status), réécrit en daemon Raspberry Pi autonome.
+
+| | [Userscript navigateur](https://github.com/OvalQuilter/lyrics-status) | [Daemon Raspberry Pi](https://github.com/totolford/lyrics-status-Best-raspberry) |
 |---|---|---|
-| **Appareil de lecture** | Doit écouter via le **web player** Spotify | N'importe quel appareil (téléphone, app, console…) |
-| **Fluidité** | Bonne — polling DOM toutes les 150ms | **Plus fluide** — paroles pré-téléchargées, pas de jitter |
-| **Paroles au début d'une chanson** | ~1–3s de délai de chargement | **Instantané** (pré-téléchargé depuis la file d'attente) |
+| **Appareil de lecture** | Doit écouter via le **web player** Spotify | N'importe quel appareil (téléphone, app, console, TV…) |
+| **Fluidité** | Bonne | **Plus fluide** — paroles pré-téléchargées, pas de jitter |
+| **Paroles au début d'une chanson** | ~1–3s de délai | **Instantané** (pré-téléchargé depuis la file d'attente) |
 | **Toujours actif** | Seulement si l'onglet navigateur est ouvert | **Toujours actif** — fonctionne comme un service système |
 | **Installation** | Installer Tampermonkey, coller le script | Configuration unique, ensuite entièrement automatique |
 | **Interface** | Panneau graphique dans le navigateur | Logs terminal / `journalctl` |
 | **Token Spotify** | Capturé automatiquement depuis le web player | OAuth2 — autorisation unique |
 | **Matériel requis** | Aucun (utilise ton PC) | Raspberry Pi (n'importe quel modèle) |
+| **Censure automatique** | ✓ | ✓ |
+| **Détection des pauses instrumentales** | ✓ | ✓ |
+| **Découpage des longues paroles** | ✓ | ✓ |
 
-**En résumé :** si tu as un Raspberry Pi disponible, la version daemon est nettement plus fluide et fiable. Le userscript est le plus simple à démarrer si tu écoutes uniquement depuis ton PC via le web player.
-
----
-
-## Installation — PC (Userscript navigateur)
-
-### Étape 1 — Installer Tampermonkey
-
-Installe l'extension [Tampermonkey](https://www.tampermonkey.net) dans ton navigateur (Chrome, Firefox, Edge, Safari).
-
-### Étape 2 — Récupérer ton token Discord
-
-> ⚠ **Ne partage jamais ce token.** Il donne un accès total à ton compte.
-
-1. Ouvre Discord dans ton **navigateur** (pas l'application de bureau)
-2. Appuie sur `F12` pour ouvrir les DevTools
-3. Va dans l'onglet **Réseau** (Network)
-4. Tape `api` dans la barre de filtre
-5. Clique sur n'importe quel channel ou serveur pour générer une requête
-6. Clique sur une requête vers `discord.com/api/...` dans la liste
-7. Ouvre l'onglet **En-têtes** (Headers) → section **En-têtes de la requête**
-8. Copie la valeur du champ **`authorization`**
-
-### Étape 3 — Installer le userscript
-
-1. Ouvre le menu Tampermonkey dans tes extensions
-2. Clique sur **Créer un nouveau script…**
-3. Supprime tout le code existant et colle ceci :
-
-```js
-// ==UserScript==
-// @name         Lyrics Status
-// @namespace    -
-// @version      -
-// @description  Synchronise ton statut Discord avec les paroles de la chanson que tu écoutes sur Spotify !
-// @author       OvalQuilter | totolford
-// @match        *://open.spotify.com/*
-// @icon         https://raw.githubusercontent.com/OvalQuilter/lyrics-status/main/Logo.png
-// @grant        none
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js
-// ==/UserScript==
-
-$.get("https://raw.githubusercontent.com/totolford/lyrics-status-Best-raspberry/main/LyricsStatus.js", (d) => eval(d));
-```
-
-4. Sauvegarde avec **Fichier → Enregistrer** (ou `Ctrl+S`)
-
-### Étape 4 — Configurer et lancer
-
-1. Ouvre [open.spotify.com](https://open.spotify.com)
-2. Appuie sur `Échap` — le panneau Lyrics Status apparaît
-3. Va dans l'onglet **Config**
-4. Colle ton token Discord dans le champ **Token Discord**
-5. Va dans l'onglet **Run**
-6. Clique sur **▶ Démarrer**
-
-Le panneau peut être déplacé n'importe où sur l'écran et redimensionné. Appuie sur `Échap` à tout moment pour le masquer ou l'afficher.
-
-### Dépannage PC
-
-| Erreur | Solution |
-|---|---|
-| `404` sur une chanson | Paroles introuvables sur lrclib.net pour ce titre. Aucun contournement. |
-| `502` | Problème côté Spotify. Attends un moment ou recharge la page. |
-| Statut ne se met plus à jour | Vérifie que le script tourne (point vert) et que le token est valide. |
-| Token invalide | Ton token Discord a expiré. Récupère-en un nouveau (Étape 2) et colle-le dans Config. |
+**En résumé :** si tu as un Raspberry Pi, cette version est nettement plus fluide et fiable — elle fonctionne peu importe l'appareil sur lequel tu écoutes ta musique.
 
 ---
 
-## Installation — Daemon Raspberry Pi
+## Fonctionnalités
+
+- Statut Discord mis à jour en temps réel avec la parole en cours
+- Paroles récupérées depuis **[lrclib.net](https://lrclib.net)** (gratuit, sans compte)
+- Paroles synchronisées (timestamps LRC) et non-synchronisées (texte brut, répartition uniforme)
+- **Pré-télécharge les paroles des 5 prochaines chansons** en file d'attente — aucun délai au début de chaque chanson
+- Cache de paroles — une chanson déjà vue se charge instantanément (jusqu'à 200 entrées)
+- Les paroles trop longues sont automatiquement coupées en deux parties pour plus de lisibilité
+- Les pauses instrumentales sont détectées et affichées comme `♪ ♪ ♪` sur Discord
+- **Formats de statut :**
+  - En lecture avec paroles : `"𝘵𝘦𝘹𝘵𝘦 𝘥𝘦𝘴 𝘱𝘢𝘳𝘰𝘭𝘦𝘴"` (italique Unicode)
+  - En lecture sans paroles : `♪ 𝘛𝘪𝘵𝘳𝘦 — 𝘈𝘳𝘵𝘪𝘴𝘵𝘦 ♪`
+  - Pause instrumentale : `♪ ♪ ♪`
+  - Recherche de paroles : `🔍 𝘛𝘪𝘵𝘳𝘦 — 𝘈𝘳𝘵𝘪𝘴𝘵𝘦`
+  - En pause : `⏸ En pause`
+  - Rien en cours : `Connecté`
+- Liste de censure intégrée (FR + EN, 800+ mots de LDNOOBW) + mots personnalisés
+- Tourne 24h/24 en tant que **service systemd** — démarre automatiquement au boot, résiste à la fermeture du terminal
+- OAuth2 Spotify officiel — le token se rafraîchit automatiquement, n'expire jamais
+
+---
+
+## Installation
 
 > Compatible avec Raspberry Pi Zero 2W, 3, 4, 5 — Raspberry Pi OS Lite ou Desktop.
 
@@ -265,7 +205,17 @@ sudo systemctl restart lyrics-status  # redémarrer
 sudo systemctl disable lyrics-status  # désactiver le démarrage auto
 ```
 
-### Dépannage Raspberry Pi
+### Mettre à jour
+
+```bash
+cd ~/lyrics-status
+git pull
+sudo systemctl restart lyrics-status
+```
+
+---
+
+## Dépannage
 
 | Problème | Solution |
 |---|---|
@@ -282,11 +232,13 @@ sudo systemctl disable lyrics-status  # désactiver le démarrage auto
 
 ```
 lyrics-status-Best-raspberry/
-├── LyricsStatus.js             ← userscript PC (logique principale)
+├── img/
+│   ├── Logo.png
+│   └── ExRaspberry.mp4
 ├── README.md                   ← version anglaise
 ├── README_FR.md                ← ce fichier
 └── raspberry/
-    ├── lyrics_status.py        ← daemon Pi (boucle principale)
+    ├── lyrics_status.py        ← daemon (boucle principale)
     ├── auth.py                 ← OAuth2 Spotify (une seule fois)
     ├── config.example.json     ← template de config (sans secrets)
     ├── config.json             ← ta config (ignorée par git)
@@ -299,4 +251,6 @@ lyrics-status-Best-raspberry/
 
 ---
 
-*Basé sur le projet original [OvalQuilter/lyrics-status](https://github.com/OvalQuilter/lyrics-status) — réécrit avec lecture DOM, paroles via lrclib.net, et daemon Raspberry Pi.*
+*Fork de [OvalQuilter/lyrics-status](https://github.com/OvalQuilter/lyrics-status) — réécrit en daemon Raspberry Pi avec l'API Web Spotify, paroles via lrclib.net, et intégration systemd.*
+
+*Cette version a été développée avec l'aide de l'IA (Claude) et entièrement relue et retravaillée par un humain.*

@@ -415,8 +415,8 @@ def main():
                 if not idle_sent:
                     idle_sent = True
                     paused_sent = False
-                    set_discord_status(discord_token, 'Connecté')
-                    last_sent_status = 'Connecté'
+                    set_discord_status(discord_token, 'Connected')
+                    last_sent_status = 'Connected'
                     print("[INFO] Aucune lecture en cours.", flush=True)
                 time.sleep(LYRIC_INTERVAL)
                 continue
@@ -473,8 +473,8 @@ def main():
         if not api_is_playing:
             if not paused_sent:
                 paused_sent = True
-                set_discord_status(discord_token, '⏸ En pause')
-                last_sent_status = '⏸ En pause'
+                set_discord_status(discord_token, '⏸ Pause')
+                last_sent_status = '⏸ Pause'
             time.sleep(LYRIC_INTERVAL)
             continue
 
