@@ -6,6 +6,7 @@ import sys
 import base64
 import threading
 import requests
+import steam_source
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,8 @@ LYRIC_INTERVAL        = 0.15  # secondes entre chaque mise à jour de la parole
 PREFETCH_COUNT        = 5     # nombre de prochaines chansons à pré-télécharger
 SPLIT_MIN_LEN         = 60    # caractères min pour couper une parole en deux
 SPLIT_DELAY_S         = 3.5   # secondes avant d'afficher la deuxième partie
+STEAM_PORT            = 8765  # port d'écoute de l'agent Steam du PC
+STATUS_REFRESH_S      = 45.0  # renvoi du statut jeu (le statut Discord expire après 1 min)
 
 # ── ITALIC UNICODE ────────────────────────────────────────────────────────────
 
@@ -372,6 +375,10 @@ def main():
     ).start()
     _rebuild_censor_regex(extra_censor)  # applique déjà les mots perso en attendant
 
+    steam_cfg = config.get('steam', {})
+    if steam_cfg.get('enabled') and steam_cfg.get('token'):
+        steam_source.start_server(int(steam_cfg.get('port', STEAM_PORT)), steam_cfg['token'])
+
     print("=== Lyrics Status (Raspberry) démarré ===", flush=True)
 
     api_progress_ms   = 0
@@ -392,6 +399,8 @@ def main():
     paused_sent       = False
     idle_sent         = False
     last_spotify_poll = 0.0
+    game_active       = None
+    game_sent_at      = 0.0
 
     def _fetch_async(tid, tname, aname, dur):
         result = fetch_lyrics(tid, tname, aname, dur)
@@ -403,6 +412,28 @@ def main():
 
     while True:
         now = time.time()
+
+        # ── Jeu Steam (détecté sur le PC, fonctionne hors ligne) ──────────────
+        game = steam_source.current_game()
+        if game:
+            if game != game_active or now - game_sent_at >= STATUS_REFRESH_S:
+                if game != game_active:
+                    print(f"[STEAM] {game}", flush=True)
+                game_active  = game
+                game_sent_at = now
+                set_discord_status(discord_token, f"🎮 {to_italic(censor_text(game))}")
+            time.sleep(LYRIC_INTERVAL)
+            continue
+        if game_active:
+            # Fin de partie : on repart de zéro pour que Spotify réaffiche son statut
+            print("[STEAM] Jeu terminé.", flush=True)
+            game_active        = None
+            last_sent_status   = None
+            paused_sent        = False
+            idle_sent          = False
+            search_status_sent = False
+            current_lyric      = None
+            last_spotify_poll  = 0.0
 
         # ── Appel API Spotify ─────────────────────────────────────────────────
         if now - last_spotify_poll >= poll_interval:

@@ -6,6 +6,11 @@
   "discord": {
     "token": "YOUR_DISCORD_TOKEN"
   },
+  "steam": {
+    "enabled": true,
+    "port":    8765,
+    "token":   "CHOOSE_A_SHARED_PASSWORD"
+  },
   "settings": {
     "send_time_offset_ms":    500,
     "spotify_poll_interval_s": 5,

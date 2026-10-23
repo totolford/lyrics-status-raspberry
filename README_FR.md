@@ -80,6 +80,25 @@ Ce projet est un fork du userscript navigateur original [OvalQuilter/lyrics-stat
 
 ---
 
+## Détection des jeux Steam (fonctionne hors ligne)
+
+Quand un jeu Steam tourne sur ton PC, le statut affiche `🎮 𝘕𝘰𝘮 𝘥𝘶 𝘫𝘦𝘶` à la place des paroles (un jeu en cours est pour l'instant prioritaire sur la musique ; un système de priorité configurable est prévu). La détection se fait **sur le PC** (le Pi ne le voit pas, et l'API web de Steam ne marche pas en mode hors ligne) : un petit agent sans dépendance lit le `RunningAppID` écrit localement par Steam, retrouve le nom dans tes fichiers `appmanifest_*.acf` et l'envoie au Pi.
+
+1. Dans `config.json` sur le Pi, définis un mot de passe partagé :
+   ```json
+   "steam": { "enabled": true, "port": 8765, "token": "CHOOSE_A_SHARED_PASSWORD" }
+   ```
+   puis `sudo systemctl restart lyrics-status`.
+2. Sur ton PC (Python 3 uniquement), copie `raspberry/steam_agent.py` et lance :
+   ```bash
+   python steam_agent.py http://PI_IP:8765 CHOOSE_A_SHARED_PASSWORD
+   ```
+   Ajoute-le au démarrage (Windows : dossier Démarrage / Planificateur de tâches).
+
+Si l'agent s'arrête, le statut jeu disparaît après ~20 s. Les raccourcis non-Steam apparaissent comme `Steam game <id>`.
+
+---
+
 ## Installation
 
 > Compatible avec Raspberry Pi Zero 2W, 3, 4, 5 — Raspberry Pi OS Lite ou Desktop.
