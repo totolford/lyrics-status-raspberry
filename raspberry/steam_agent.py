@@ -17,6 +17,7 @@ import re
 import sys
 import time
 import subprocess
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -80,11 +81,23 @@ def _game_name(root, appid):
     return f'Steam game {appid}'  # raccourci non-Steam ou jeu hors bibliothèques connues
 
 def current_game():
-    root = _steam_root()
+    root  = _steam_root()
     appid = _running_appid(root) if root else 0
-    if appid:
-        return _game_name(root, appid)
-    return _process_game()
+    exes  = _running_exes()
+    name  = _game_name(root, appid) if appid else _process_game(exes)
+    if not name:
+        _stop_all_details()
+        return None
+    for exe, (fn, stop) in _DETAILS.items():
+        if exe in exes:
+            try:
+                detail = fn()
+            except Exception:
+                detail = None
+            return f'{name} · {detail}' if detail else name
+        if stop:
+            stop()  # le jeu n'est pas lancé : on coupe son écoute éventuelle
+    return name
 
 # ── Jeux hors Steam ───────────────────────────────────────────────────────────
 
@@ -172,20 +185,11 @@ def _load_table():
         pass
     return _table
 
-def _process_game():
+def _process_game(exes):
     table = _load_table()
-    if not table:
-        return None
-    for exe in _running_exes():
+    for exe in exes:
         if exe in table:
-            extra = _DETAILS.get(exe)
-            detail = None
-            if extra:
-                try:
-                    detail = extra()
-                except Exception:
-                    detail = None
-            return f'{table[exe]} · {detail}' if detail else table[exe]
+            return table[exe]
     return None
 
 # ── Détails par jeu (ajoutés au nom : "ROBLOX · Adopt Me!") ───────────────────
@@ -228,7 +232,111 @@ def _roblox_detail():
         st['place'] = int(m[1])
     return _roblox_name(st['place']) if st['place'] else None
 
-_DETAILS = {'robloxplayerbeta.exe': _roblox_detail}
+# ── War Thunder : API locale http://127.0.0.1:8111 (ouverte seulement quand le jeu tourne) ──
+
+def _warthunder_detail():
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8111/mission.json', timeout=1) as r:
+            status = json.loads(r.read()).get('status')
+    except Exception:
+        return None
+    return {'running': 'en combat', 'success': 'victoire', 'fail': 'défaite'}.get(status, 'hangar')
+
+# ── CS2 : Game State Integration (Valve). Le jeu POSTe l'état vers un petit serveur local ──
+
+GSI_PORT = 3399
+_GSI_CFG = '''"Lyrics Status"
+{
+  "uri"       "http://127.0.0.1:%d"
+  "timeout"   "5.0"
+  "buffer"    "0.1"
+  "throttle"  "0.5"
+  "heartbeat" "10.0"
+  "data"
+  {
+    "provider"     "1"
+    "map"          "1"
+    "player_id"    "1"
+  }
+}
+''' % GSI_PORT
+_gsi = {'server': None, 'data': None, 'at': 0.0}
+
+def install_cs2_cfg():
+    """Écrit le fichier GSI dans le dossier cfg de CS2 (une fois) si on le trouve."""
+    root = _steam_root()
+    if not root:
+        return None
+    for d in _library_dirs(root):
+        cfg_dir = d / 'common' / 'Counter-Strike Global Offensive' / 'game' / 'csgo' / 'cfg'
+        if cfg_dir.is_dir():
+            f = cfg_dir / 'gamestate_integration_lyricsstatus.cfg'
+            if not f.exists() or f.read_text() != _GSI_CFG:
+                f.write_text(_GSI_CFG)
+                return True  # nouvellement écrit : CS2 doit être relancé pour le lire
+            return False
+    return None
+
+def _gsi_start():
+    if _gsi['server']:
+        return
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                body = self.rfile.read(min(int(self.headers.get('Content-Length', 0)), 200000))
+                _gsi['data'], _gsi['at'] = json.loads(body), time.time()
+            except Exception:
+                pass
+            self.send_response(200); self.end_headers()
+        def log_message(self, *a):
+            pass
+    try:
+        srv = HTTPServer(('127.0.0.1', GSI_PORT), H)
+    except OSError:
+        return
+    _gsi['server'] = srv
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    if install_cs2_cfg():
+        print("[CS2] Fichier GSI installé : relance CS2 pour activer les détails de partie.", flush=True)
+
+def _gsi_stop():
+    srv = _gsi['server']
+    if srv:
+        _gsi.update(server=None, data=None)
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+        srv.server_close()
+
+_CS2_MODES = {'competitive': 'Compétitif', 'casual': 'Occasionnel', 'deathmatch': 'Deathmatch',
+              'scrimcomp2v2': 'Wingman', 'gungameprogressive': 'Course aux armes'}
+
+def _cs2_detail():
+    _gsi_start()
+    data = _gsi['data']
+    if not data or time.time() - _gsi['at'] > 30:
+        return None
+    m = data.get('map')
+    if not m or not m.get('name'):
+        return None
+    name  = m['name'].split('_', 1)[-1].replace('_', ' ').title()
+    parts = [_CS2_MODES.get(m.get('mode'), (m.get('mode') or '').title()), name]
+    ct, t = m.get('team_ct', {}).get('score'), m.get('team_t', {}).get('score')
+    if ct is not None and t is not None:
+        team = (data.get('player') or {}).get('team')
+        parts.append(f'{t}-{ct}' if team == 'T' else f'{ct}-{t}')
+    return ' · '.join(p for p in parts if p)
+
+def _stop_all_details():
+    for _, stop in _DETAILS.values():
+        if stop:
+            stop()
+
+# exe -> (fonction de détail, fonction d'arrêt ou None) ; appelée seulement si l'exe tourne
+_DETAILS = {
+    'robloxplayerbeta.exe': (_roblox_detail, None),
+    'aces.exe':             (_warthunder_detail, None),
+    'cs2.exe':              (_cs2_detail, _gsi_stop),
+}
 
 def _lower_priority():
     """Priorité CPU minimale pour ne jamais gêner le jeu."""
