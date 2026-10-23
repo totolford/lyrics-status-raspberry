@@ -82,7 +82,7 @@ Ce projet est un fork du userscript navigateur original [OvalQuilter/lyrics-stat
 
 ## Détection des jeux Steam (fonctionne hors ligne)
 
-Quand un jeu Steam tourne sur ton PC, le statut affiche `🎮 𝘕𝘰𝘮 𝘥𝘶 𝘫𝘦𝘶` à la place des paroles (un jeu en cours est pour l'instant prioritaire sur la musique ; un système de priorité configurable est prévu). La détection se fait **sur le PC** (le Pi ne le voit pas, et l'API web de Steam ne marche pas en mode hors ligne) : un petit agent sans dépendance lit le `RunningAppID` écrit localement par Steam, retrouve le nom dans tes fichiers `appmanifest_*.acf` et l'envoie au Pi.
+Quand un jeu Steam tourne sur ton PC, le statut affiche `🎮 𝘕𝘰𝘮 𝘥𝘶 𝘫𝘦𝘶` à la place des paroles (la musique est toujours prioritaire : le jeu ne s'affiche que lorsque Spotify ne joue rien ; un système de priorité configurable est prévu). La détection se fait **sur le PC** (le Pi ne le voit pas, et l'API web de Steam ne marche pas en mode hors ligne) : un petit agent sans dépendance lit le `RunningAppID` écrit localement par Steam, retrouve le nom dans tes fichiers `appmanifest_*.acf` et l'envoie au Pi.
 
 1. Dans `config.json` sur le Pi, définis un mot de passe partagé :
    ```json

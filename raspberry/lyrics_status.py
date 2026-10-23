@@ -400,8 +400,16 @@ def main():
     paused_sent       = False
     idle_sent         = False
     last_spotify_poll = 0.0
-    game_active       = None
-    game_sent_at      = 0.0
+    game_state        = {'name': None, 'sent_at': 0.0, 'shown': False}
+
+    def show_game(game, now):
+        """Affiche le jeu (renvoyé périodiquement : le statut Discord expire après 1 min)."""
+        if (game != game_state['name'] or not game_state['shown']
+                or now - game_state['sent_at'] >= STATUS_REFRESH_S):
+            if game != game_state['name']:
+                print(f"[JEU] {game}", flush=True)
+            game_state.update(name=game, sent_at=now, shown=True)
+            set_discord_status(discord_token, f"🎮 {to_italic(censor_text(game))}")
 
     def _fetch_async(tid, tname, aname, dur):
         result = fetch_lyrics(tid, tname, aname, dur)
@@ -414,28 +422,18 @@ def main():
     while True:
         now = time.time()
 
-        # ── Jeu Steam (détecté sur le PC, fonctionne hors ligne) ──────────────
+        # ── Jeu détecté sur le PC (la musique reste toujours prioritaire) ─────
         game = steam_source.current_game()
-        if game:
-            if game != game_active or now - game_sent_at >= STATUS_REFRESH_S:
-                if game != game_active:
-                    print(f"[STEAM] {game}", flush=True)
-                game_active  = game
-                game_sent_at = now
-                set_discord_status(discord_token, f"🎮 {to_italic(censor_text(game))}")
-            time.sleep(LYRIC_INTERVAL)
-            continue
-        if game_active:
-            # Fin de partie : statut vidé ; Spotify ne réécrit qu'une fois la musique relancée
-            print("[STEAM] Jeu terminé.", flush=True)
-            game_active        = None
-            set_discord_status(discord_token, None)
-            last_sent_status   = None
-            paused_sent        = True
-            idle_sent          = True
-            search_status_sent = False
-            current_lyric      = None
-            last_spotify_poll  = 0.0
+        if not game and game_state['name']:
+            print("[JEU] Jeu terminé.", flush=True)
+            game_state['name'] = None
+            if game_state['shown'] and not api_is_playing:
+                # Le jeu était affiché et rien ne joue : statut vidé, pas de « Pause »
+                set_discord_status(discord_token, None)
+                last_sent_status = None
+                paused_sent      = True
+                idle_sent        = True
+                game_state['shown'] = False
 
         # ── Appel API Spotify ─────────────────────────────────────────────────
         if now - last_spotify_poll >= poll_interval:
@@ -445,7 +443,9 @@ def main():
 
             if not playing or not playing.get('item'):
                 api_is_playing = False
-                if not idle_sent:
+                if game:
+                    show_game(game, now)
+                elif not idle_sent:
                     idle_sent = True
                     paused_sent = False
                     set_discord_status(discord_token, 'Connected')
@@ -504,7 +504,9 @@ def main():
 
         # ── Pas de lecture active ─────────────────────────────────────────────
         if not api_is_playing:
-            if not paused_sent:
+            if game:
+                show_game(game, now)
+            elif not paused_sent and not idle_sent:
                 paused_sent = True
                 set_discord_status(discord_token, '⏸ Pause')
                 last_sent_status = '⏸ Pause'
@@ -512,6 +514,12 @@ def main():
             continue
 
         paused_sent = False
+        if game_state['shown']:
+            # La musique reprend la main sur le jeu : on réaffiche paroles / titre
+            game_state['shown'] = False
+            last_sent_status   = None
+            current_lyric      = None
+            search_status_sent = False
 
         # ── Estimation locale de la progression ───────────────────────────────
         elapsed_ms  = (time.time() - api_fetch_time) * 1000

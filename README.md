@@ -82,7 +82,7 @@ This project is a fork of the original [OvalQuilter/lyrics-status](https://githu
 
 ## Steam game detection (works offline)
 
-When a Steam game is running on your PC, the status shows `🎮 𝘎𝘢𝘮𝘦 𝘕𝘢𝘮𝘦` instead of lyrics (a running game currently takes priority over music; a configurable priority system is planned). Detection happens **on the PC** (the Pi can't see it, and Steam's web API doesn't work in offline mode): a tiny dependency-free agent reads the `RunningAppID` that the Steam client writes locally, resolves the name from your installed `appmanifest_*.acf` files, and pushes it to the Pi.
+When a Steam game is running on your PC, the status shows `🎮 𝘎𝘢𝘮𝘦 𝘕𝘢𝘮𝘦` instead of lyrics (music always takes priority: the game only shows when nothing is playing on Spotify; a configurable priority system is planned). Detection happens **on the PC** (the Pi can't see it, and Steam's web API doesn't work in offline mode): a tiny dependency-free agent reads the `RunningAppID` that the Steam client writes locally, resolves the name from your installed `appmanifest_*.acf` files, and pushes it to the Pi.
 
 1. In `config.json` on the Pi, set a shared password:
    ```json
