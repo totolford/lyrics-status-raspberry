@@ -68,7 +68,19 @@ def current_game():
     appid = _running_appid(root)
     return _game_name(root, appid) if appid else None
 
+def _lower_priority():
+    """Priorité CPU minimale pour ne jamais gêner le jeu."""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)  # IDLE
+        else:
+            os.nice(19)
+    except Exception:
+        pass
+
 def main():
+    _lower_priority()
     url   = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PI_URL', '')).rstrip('/')
     token = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('STEAM_TOKEN', '')
     if not url or not token:
