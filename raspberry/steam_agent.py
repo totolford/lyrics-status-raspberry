@@ -326,6 +326,124 @@ def _cs2_detail():
         parts.append(f'{t}-{ct}' if team == 'T' else f'{ct}-{t}')
     return ' · '.join(p for p in parts if p)
 
+# ── Arma Reforger : le nom du serveur est écrit dans console.log à la connexion ──
+
+_arma = {'path': None, 'offset': 0, 'server': None}
+_ARMA_SERVER = re.compile(rb"Server Name:\s+'(.*)'")
+
+def _arma_log_dirs():
+    home = Path.home()
+    for docs in (home / 'Documents', home / 'OneDrive' / 'Documents', home / 'OneDrive' / 'Documents'):
+        yield docs / 'My Games' / 'ArmaReforger' / 'logs'
+
+def _clean_server_name(name):
+    parts = [p.strip() for p in name.split('|')]
+    parts = [p for p in parts if p and not re.search(r'discord\.gg|https?://|www\.', p, re.I)]
+    out = ' | '.join(parts) or name
+    return out if len(out) <= 60 else out[:57] + '…'
+
+def _arma_detail():
+    logs = [f for d in _arma_log_dirs() if d.is_dir() for f in d.glob('*/console.log')]
+    if not logs:
+        return None
+    path = max(logs, key=lambda f: f.stat().st_mtime)
+    st = _arma
+    if st['path'] != path or path.stat().st_size < st['offset']:
+        st.update(path=path, offset=0, server=None)
+    with open(path, 'rb') as f:
+        f.seek(st['offset'])
+        data = f.read()
+        st['offset'] += len(data)
+    for m in _ARMA_SERVER.finditer(data):
+        st['server'] = _clean_server_name(m[1].decode(errors='ignore'))
+    return st['server']
+
+# ── Valorant : API locale du client Riot (lockfile), lecture seule de la présence ──
+
+_VAL_MAPS = {'ascent': 'Ascent', 'bonsai': 'Split', 'triad': 'Haven', 'duality': 'Bind', 'port': 'Icebox',
+             'foxtrot': 'Breeze', 'canyon': 'Fracture', 'pitt': 'Pearl', 'jam': 'Lotus',
+             'juliett': 'Sunset', 'infinity': 'Abyss', 'rook': 'Corrode'}
+_VAL_QUEUES = {'competitive': 'Compétitif', 'unrated': 'Non classé', 'spikerush': 'Spike Rush',
+               'deathmatch': 'Deathmatch', 'swiftplay': 'Swiftplay', 'premier': 'Premier',
+               'ggteam': 'Escalade', 'onefa': 'Réplication', 'snowball': 'Boules de neige',
+               'hurm': 'Match à mort par équipe', 'custom': 'Partie perso'}
+
+def _riot_get(path):
+    import base64, ssl
+    lock = Path(os.environ.get('LOCALAPPDATA', '')) / 'Riot Games' / 'Riot Client' / 'Config' / 'lockfile'
+    _, _, port, password, proto = lock.read_text().strip().split(':')
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # certificat auto-signé du client Riot, connexion 127.0.0.1 uniquement
+    req = urllib.request.Request(f'{proto}://127.0.0.1:{port}{path}', headers={
+        'Authorization': 'Basic ' + base64.b64encode(f'riot:{password}'.encode()).decode()})
+    return json.loads(urllib.request.urlopen(req, timeout=2, context=ctx).read())
+
+def _find_key(obj, key):
+    """Cherche une clé à n'importe quelle profondeur (le format de présence a changé selon les versions)."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    return None
+
+def _valorant_detail():
+    import base64
+    me = _riot_get('/chat/v1/session').get('puuid')
+    for pr in _riot_get('/chat/v4/presences').get('presences', []):
+        if pr.get('puuid') != me or pr.get('product') != 'valorant' or not pr.get('private'):
+            continue
+        priv  = json.loads(base64.b64decode(pr['private']))
+        state = _find_key(priv, 'sessionLoopState')
+        if state == 'PREGAME':
+            return 'sélection des agents'
+        if state != 'INGAME':
+            return None
+        queue = _find_key(priv, 'queueId') or ''
+        mapid = (_find_key(priv, 'matchMap') or '').rsplit('/', 1)[-1].lower()
+        ally  = _find_key(priv, 'partyOwnerMatchScoreAllyTeam')
+        enemy = _find_key(priv, 'partyOwnerMatchScoreEnemyTeam')
+        parts = [_VAL_QUEUES.get(queue, queue.title()), _VAL_MAPS.get(mapid, mapid.title())]
+        if ally is not None and enemy is not None:
+            parts.append(f'{ally}-{enemy}')
+        return ' · '.join(p for p in parts if p)
+    return None
+
+# ── Apex Legends : rang via l'API tierce Mozambique (clé gratuite dans agent_config.json) ──
+
+CONFIG_PATH = HERE / 'agent_config.json'
+_apex = {'at': 0.0, 'text': None}
+_APEX_TIERS = {'Apex Predator': 'Prédateur', 'Master': 'Maître', 'Rookie': 'Débutant'}
+
+def _http_json(url):
+    return json.loads(urllib.request.urlopen(url, timeout=6).read())
+
+def _apex_detail():
+    if time.time() - _apex['at'] < 120:  # le rang change peu : une requête toutes les 2 min
+        return _apex['text']
+    _apex['at'] = time.time()
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text()).get('apex', {})
+        if not cfg.get('key') or not cfg.get('player'):
+            return None
+        from urllib.parse import quote
+        data = _http_json('https://api.mozambiquehe.re/bridge?auth=%s&player=%s&platform=%s' % (
+            quote(cfg['key']), quote(cfg['player']), quote(cfg.get('platform', 'PC'))))
+        rank = data['global']['rank']
+        name = _APEX_TIERS.get(rank['rankName'], rank['rankName'])
+        pos  = rank.get('ladderPosPlatform', -1)
+        if rank['rankName'] == 'Apex Predator' and pos and pos > 0:
+            _apex['text'] = f'{name} #{pos}'
+        else:
+            div = rank.get('rankDiv')
+            _apex['text'] = f"{name}{' ' + str(div) if div else ''} · {rank.get('rankScore', 0)} RP"
+    except Exception:
+        _apex['text'] = None
+    return _apex['text']
+
 def _stop_all_details():
     for _, stop in _DETAILS.values():
         if stop:
@@ -336,6 +454,12 @@ _DETAILS = {
     'robloxplayerbeta.exe': (_roblox_detail, None),
     'aces.exe':             (_warthunder_detail, None),
     'cs2.exe':              (_cs2_detail, _gsi_stop),
+    'armareforgersteam.exe':              (_arma_detail, None),
+    'armareforger_be.exe':                (_arma_detail, None),
+    'armareforgersteam_experimental.exe': (_arma_detail, None),
+    'valorant-win64-shipping.exe':        (_valorant_detail, None),
+    'r5apex.exe':                         (_apex_detail, None),
+    'r5apex_dx12.exe':                    (_apex_detail, None),
 }
 
 def _lower_priority():
