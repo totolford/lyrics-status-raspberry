@@ -178,8 +178,57 @@ def _process_game():
         return None
     for exe in _running_exes():
         if exe in table:
-            return table[exe]
+            extra = _DETAILS.get(exe)
+            detail = None
+            if extra:
+                try:
+                    detail = extra()
+                except Exception:
+                    detail = None
+            return f'{table[exe]} · {detail}' if detail else table[exe]
     return None
+
+# ── Détails par jeu (ajoutés au nom : "ROBLOX · Adopt Me!") ───────────────────
+
+_roblox = {'path': None, 'offset': 0, 'place': None, 'names': {}}
+_ROBLOX_JOIN = re.compile(rb"Joining game '[0-9a-fA-F-]+' place (\d+)")
+
+def _roblox_name(place_id):
+    cache = _roblox['names']
+    hit = cache.get(place_id)
+    if hit and (hit[0] or time.time() - hit[1] < 60):  # échec : on réessaie après 60 s
+        return hit[0]
+    name = None
+    try:
+        def get(u):
+            return json.loads(urllib.request.urlopen(u, timeout=5).read())
+        uni = get(f'https://apis.roblox.com/universes/v1/places/{place_id}/universe')['universeId']
+        name = get(f'https://games.roblox.com/v1/games?universeIds={uni}')['data'][0]['name']
+        name = re.sub(r'^(\s*\[[^\]]*\])+\s*', '', name).strip() or name  # retire les [tags] de début
+    except Exception:
+        pass
+    cache[place_id] = (name, time.time())
+    return name
+
+def _roblox_detail():
+    """Nom exact de l'expérience Roblox, lu dans le dernier log du client (lecture incrémentale)."""
+    logs = Path(os.environ.get('LOCALAPPDATA', '')) / 'Roblox' / 'logs'
+    files = list(logs.glob('*Player*.log')) if logs.is_dir() else []
+    if not files:
+        return None
+    path = max(files, key=lambda f: f.stat().st_mtime)
+    st = _roblox
+    if st['path'] != path or path.stat().st_size < st['offset']:
+        st.update(path=path, offset=0, place=None)
+    with open(path, 'rb') as f:
+        f.seek(st['offset'])
+        data = f.read()
+        st['offset'] += len(data)
+    for m in _ROBLOX_JOIN.finditer(data):
+        st['place'] = int(m[1])
+    return _roblox_name(st['place']) if st['place'] else None
+
+_DETAILS = {'robloxplayerbeta.exe': _roblox_detail}
 
 def _lower_priority():
     """Priorité CPU minimale pour ne jamais gêner le jeu."""
