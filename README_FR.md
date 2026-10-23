@@ -95,6 +95,8 @@ Quand un jeu Steam tourne sur ton PC, le statut affiche `🎮 𝘕𝘰𝘮 𝘥�
    ```
    Ajoute-le au démarrage (Windows : dossier Démarrage / Planificateur de tâches).
 
+**Les jeux hors Steam** (Epic, Battle.net, émulateurs, jeux standalone…) sont détectés aussi : l'agent télécharge 1 fois par semaine la liste publique des jeux connus de Discord (noms des .exe) et la compare aux processus en cours (un instantané très léger toutes les 5 s). Un jeu manquant s'ajoute dans `custom_games.json` à côté de l'agent : `{"monjeu.exe": "Mon Jeu"}`. À la fermeture du jeu, le statut est vidé (Spotify reprend dès que la musique est relancée).
+
 Si l'agent s'arrête, le statut jeu disparaît après ~20 s. Les raccourcis non-Steam apparaissent comme `Steam game <id>`.
 
 ---

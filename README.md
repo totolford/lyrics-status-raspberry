@@ -95,6 +95,8 @@ When a Steam game is running on your PC, the status shows `🎮 𝘎𝘢𝘮𝘦
    ```
    Add it to your startup (Windows: Startup folder / Task Scheduler) to run it automatically.
 
+**Games outside Steam** (Epic, Battle.net, emulators, cracked/standalone…) are detected too: once a week the agent downloads the public list of games known to Discord (exe names) and matches it against running processes (a cheap process snapshot every 5 s). A missing game can be added in `custom_games.json` next to the agent: `{"mygame.exe": "My Game"}`. When the game closes, the status is cleared (Spotify takes over again once music plays).
+
 If the agent stops, the game status disappears after ~20 s. Non-Steam shortcuts appear as `Steam game <id>`.
 
 ---

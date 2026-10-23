@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Agent à lancer sur le PC (Windows / Linux / macOS) : détecte le jeu Steam en cours,
-même en mode hors ligne, et l'envoie au Raspberry Pi. Aucune dépendance (stdlib seule).
+Agent à lancer sur le PC (Windows / Linux / macOS) : détecte le jeu en cours
+(Steam, même hors ligne, ou n'importe quel autre jeu) et l'envoie au Raspberry Pi.
+Aucune dépendance (stdlib seule).
+
+Jeux hors Steam : l'agent télécharge 1x/semaine la liste publique des jeux connus de
+Discord (nom des .exe) et compare avec les processus en cours. Pour ajouter un jeu
+manquant, crée custom_games.json à côté : {"monjeu.exe": "Mon Jeu"}
 
 Usage : python steam_agent.py http://IP_DU_PI:8765 MOT_DE_PASSE
         (ou variables d'env PI_URL / STEAM_TOKEN)
@@ -11,12 +16,25 @@ import os
 import re
 import sys
 import time
+import subprocess
 import urllib.request
 from pathlib import Path
+
+HERE         = Path(__file__).resolve().parent
+CACHE_PATH   = HERE / 'games_cache.json'
+CUSTOM_PATH  = HERE / 'custom_games.json'
+CACHE_MAX_AGE_S = 7 * 86400
+DETECTABLE_URL  = 'https://discord.com/api/v9/applications/detectable'
 
 INTERVAL_S = 5
 
 def _steam_root():
+    try:
+        return _steam_root_unsafe()
+    except Exception:
+        return None
+
+def _steam_root_unsafe():
     if sys.platform == 'win32':
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as k:
@@ -63,10 +81,105 @@ def _game_name(root, appid):
 
 def current_game():
     root = _steam_root()
-    if not root:
+    appid = _running_appid(root) if root else 0
+    if appid:
+        return _game_name(root, appid)
+    return _process_game()
+
+# ── Jeux hors Steam ───────────────────────────────────────────────────────────
+
+def build_cache():
+    """Télécharge la liste Discord et en tire une petite table exe -> jeu (lancé en sous-processus)."""
+    req = urllib.request.Request(DETECTABLE_URL, headers={'User-Agent': 'lyrics-status-agent'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        apps = json.loads(r.read())
+    names = {}
+    for app in apps:
+        for ex in app.get('executables', []):
+            if ex.get('os') != 'win32' or ex.get('is_launcher'):
+                continue
+            exe = ex['name'].lstrip('>').replace('\\', '/').rsplit('/', 1)[-1].lower()
+            if exe.endswith('.exe'):
+                names.setdefault(exe, set()).add(app['name'])
+    # un nom d'exe partagé par plusieurs jeux (game.exe...) est trop ambigu : ignoré
+    table = {exe: next(iter(n)) for exe, n in names.items() if len(n) == 1}
+    tmp = CACHE_PATH.with_suffix('.tmp')
+    tmp.write_text(json.dumps(table))
+    tmp.replace(CACHE_PATH)
+
+def _refresh_cache_if_old():
+    try:
+        if CACHE_PATH.exists() and time.time() - CACHE_PATH.stat().st_mtime < CACHE_MAX_AGE_S:
+            return
+        flags = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--build-cache'],
+                         creationflags=flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def _running_exes():
+    """Noms (minuscules) des programmes en cours, sans dépendance."""
+    if sys.platform == 'win32':
+        import ctypes
+        from ctypes import wintypes
+        class PE(ctypes.Structure):
+            _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                        ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+                        ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+                        ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG),
+                        ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
+        k32 = ctypes.windll.kernel32
+        k32.CreateToolhelp32Snapshot.restype  = wintypes.HANDLE
+        k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        exes = set()
+        try:
+            pe = PE(); pe.dwSize = ctypes.sizeof(PE)
+            ok = k32.Process32FirstW(snap, ctypes.byref(pe))
+            while ok:
+                exes.add(pe.szExeFile.lower())
+                ok = k32.Process32NextW(snap, ctypes.byref(pe))
+        finally:
+            k32.CloseHandle(snap)
+        return exes
+    exes = set()
+    if sys.platform == 'darwin':
+        out = subprocess.run(['ps', '-A', '-o', 'comm='], capture_output=True, text=True).stdout
+        return {l.strip().rsplit('/', 1)[-1].lower() for l in out.splitlines()}
+    for d in Path('/proc').glob('[0-9]*'):  # Linux : jeux Windows sous Wine/Proton inclus
+        try:
+            argv = (d / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        for a in argv[:2]:
+            exes.add(a.decode(errors='ignore').replace('\\', '/').rsplit('/', 1)[-1].lower())
+    return exes
+
+_table = {}
+_table_mtime = 0.0
+
+def _load_table():
+    global _table, _table_mtime
+    try:
+        m = sum(p.stat().st_mtime for p in (CACHE_PATH, CUSTOM_PATH) if p.exists())
+        if m != _table_mtime:
+            table = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() else {}
+            if CUSTOM_PATH.exists():
+                table.update({k.lower(): v for k, v in json.loads(CUSTOM_PATH.read_text()).items()})
+            _table, _table_mtime = table, m
+    except Exception:
+        pass
+    return _table
+
+def _process_game():
+    table = _load_table()
+    if not table:
         return None
-    appid = _running_appid(root)
-    return _game_name(root, appid) if appid else None
+    for exe in _running_exes():
+        if exe in table:
+            return table[exe]
+    return None
 
 def _lower_priority():
     """Priorité CPU minimale pour ne jamais gêner le jeu."""
@@ -80,6 +193,9 @@ def _lower_priority():
         pass
 
 def main():
+    if '--build-cache' in sys.argv:
+        build_cache()
+        return
     _lower_priority()
     url   = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PI_URL', '')).rstrip('/')
     token = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('STEAM_TOKEN', '')
@@ -87,8 +203,12 @@ def main():
         sys.exit("Usage : python steam_agent.py http://IP_DU_PI:8765 MOT_DE_PASSE")
     print(f"Agent Steam → {url}", flush=True)
     last = ...
+    last_cache_check = 0.0
     while True:
         try:
+            if time.time() - last_cache_check > 3600:
+                last_cache_check = time.time()
+                _refresh_cache_if_old()
             game = current_game()
             if game != last:
                 print(f"[JEU] {game or 'aucun'}", flush=True)

@@ -330,12 +330,13 @@ def get_active_lyric(lines, progress_ms, offset_ms):
 # ── DISCORD ───────────────────────────────────────────────────────────────────
 
 def set_discord_status(token, text):
+    """text=None efface le statut."""
     expires = (datetime.now(timezone.utc) + timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
     try:
         r = requests.patch(
             'https://discord.com/api/v9/users/@me/settings',
             headers={'Authorization': token, 'Content-Type': 'application/json'},
-            json={'custom_status': {
+            json={'custom_status': None if text is None else {
                 'text':       text,
                 'emoji_id':   None,
                 'emoji_name': None,
@@ -425,12 +426,13 @@ def main():
             time.sleep(LYRIC_INTERVAL)
             continue
         if game_active:
-            # Fin de partie : on repart de zéro pour que Spotify réaffiche son statut
+            # Fin de partie : statut vidé ; Spotify ne réécrit qu'une fois la musique relancée
             print("[STEAM] Jeu terminé.", flush=True)
             game_active        = None
+            set_discord_status(discord_token, None)
             last_sent_status   = None
-            paused_sent        = False
-            idle_sent          = False
+            paused_sent        = True
+            idle_sent          = True
             search_status_sent = False
             current_lyric      = None
             last_spotify_poll  = 0.0
