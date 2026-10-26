@@ -228,7 +228,31 @@ class SpotifyToken:
 
 # ── SPOTIFY API ───────────────────────────────────────────────────────────────
 
+# Réponse « on ne sait pas » (limite de débit, erreur réseau/serveur) : on garde le dernier
+# état connu au lieu de croire que la musique s'est arrêtée.
+SPOTIFY_UNKNOWN = object()
+
+_spotify_block_until = 0.0   # pas de requête avant cette date (limite 429)
+_spotify_backoff     = 0.0
+
+def spotify_blocked():
+    return time.time() < _spotify_block_until
+
+def _note_rate_limit(r):
+    """429 : on respecte le délai demandé par Spotify (Retry-After) au lieu de réessayer sans cesse."""
+    global _spotify_block_until, _spotify_backoff
+    try:
+        wait = float(r.headers.get('Retry-After', ''))
+    except ValueError:
+        wait = min(max(_spotify_backoff * 2, 30.0), 600.0)  # pas d'indication : 30 s, 1 min, 2 min... max 10 min
+    _spotify_backoff     = wait
+    _spotify_block_until = time.time() + wait
+    shown = f"{wait / 3600:.1f} h" if wait >= 3600 else (f"{wait / 60:.0f} min" if wait >= 120 else f"{wait:.0f} s")
+    print(f"[SPOTIFY] Limite de requêtes atteinte (429) : pause de {shown}. "
+          f"La musique Spotify n'est plus mise à jour pendant ce temps.", flush=True)
+
 def fetch_currently_playing(token):
+    global _spotify_backoff
     try:
         r = requests.get(
             'https://api.spotify.com/v1/me/player/currently-playing',
@@ -236,15 +260,22 @@ def fetch_currently_playing(token):
             timeout=8,
         )
         if r.status_code in (204, 404):
+            _spotify_backoff = 0.0
             return None
         if r.status_code == 200:
+            _spotify_backoff = 0.0
             return r.json()
-        print(f"[WARN] Spotify API: {r.status_code}", flush=True)
+        if r.status_code == 429:
+            _note_rate_limit(r)
+        else:
+            print(f"[WARN] Spotify API: {r.status_code}", flush=True)
     except Exception as e:
         print(f"[WARN] Spotify réseau: {e}", flush=True)
-    return None
+    return SPOTIFY_UNKNOWN
 
 def fetch_queue(token):
+    if spotify_blocked():
+        return []
     try:
         r = requests.get(
             'https://api.spotify.com/v1/me/player/queue',
@@ -253,6 +284,8 @@ def fetch_queue(token):
         )
         if r.status_code == 200:
             return r.json().get('queue', [])
+        if r.status_code == 429:
+            _note_rate_limit(r)
     except Exception:
         pass
     return []
@@ -526,10 +559,12 @@ def main():
         now = time.time()
 
         # ── Appel API Spotify ─────────────────────────────────────────────────
-        if 'spotify' in priority and now - last_spotify_poll >= poll_interval:
+        if 'spotify' in priority and not spotify_blocked() and now - last_spotify_poll >= poll_interval:
             last_spotify_poll = now
             playing = fetch_currently_playing(sp_token.get())
-            if playing and playing.get('item'):
+            if playing is SPOTIFY_UNKNOWN:
+                pass  # limite de débit / erreur : on garde le dernier état connu
+            elif playing and playing.get('item'):
                 sp.update(item=playing['item'], playing=bool(playing.get('is_playing')),
                           progress=playing.get('progress_ms', 0), fetched_at=time.time())
             else:
@@ -540,8 +575,13 @@ def main():
         media = snap['media'] if 'pc_media' in priority else None
         game  = snap['game'] if 'game' in priority else None
 
+        sp_live = bool(sp['item'] and sp['playing'])
+        if sp_live:
+            # État ancien (Spotify injoignable) : si la piste est forcément finie, on ne l'affiche plus
+            est = sp['progress'] + (now - sp['fetched_at']) * 1000
+            sp_live = est <= sp['item'].get('duration_ms', 0) + 3000
         available = {
-            'spotify':  bool(sp['item'] and sp['playing']),
+            'spotify':  sp_live,
             'pc_media': bool(media and media['playing']),
             'game':     bool(game),
         }
