@@ -5,3 +5,5 @@ spotify_token.json
 venv/
 __pycache__/
 *.pyc
+
+spotify_block.json

@@ -232,8 +232,22 @@ class SpotifyToken:
 # état connu au lieu de croire que la musique s'est arrêtée.
 SPOTIFY_UNKNOWN = object()
 
-_spotify_block_until = 0.0   # pas de requête avant cette date (limite 429)
+BLOCK_PATH = Path(__file__).parent / 'spotify_block.json'
+
+def _load_block():
+    try:
+        return float(json.loads(BLOCK_PATH.read_text()).get('until', 0))
+    except Exception:
+        return 0.0
+
+_spotify_block_until = _load_block()   # pas de requête avant cette date (limite 429), conservée au redémarrage
 _spotify_backoff     = 0.0
+
+def _save_block():
+    try:
+        BLOCK_PATH.write_text(json.dumps({'until': _spotify_block_until}))
+    except Exception:
+        pass
 
 def spotify_blocked():
     return time.time() < _spotify_block_until
@@ -247,8 +261,10 @@ def _note_rate_limit(r):
         wait = min(max(_spotify_backoff * 2, 30.0), 600.0)  # pas d'indication : 30 s, 1 min, 2 min... max 10 min
     _spotify_backoff     = wait
     _spotify_block_until = time.time() + wait
+    _save_block()
     shown = f"{wait / 3600:.1f} h" if wait >= 3600 else (f"{wait / 60:.0f} min" if wait >= 120 else f"{wait:.0f} s")
-    print(f"[SPOTIFY] Limite de requêtes atteinte (429) : pause de {shown}. "
+    until = datetime.fromtimestamp(_spotify_block_until).strftime('%H:%M')
+    print(f"[SPOTIFY] Limite de requêtes atteinte (429) : pause de {shown} (jusqu'à {until}). "
           f"La musique Spotify n'est plus mise à jour pendant ce temps.", flush=True)
 
 def fetch_currently_playing(token):
@@ -524,6 +540,9 @@ def main():
 
     print("=== Lyrics Status (Raspberry) démarré ===", flush=True)
     print(f"[CONFIG] Priorité des sources : {' > '.join(priority)}", flush=True)
+    if spotify_blocked():
+        until = datetime.fromtimestamp(_spotify_block_until).strftime('%d/%m %H:%M')
+        print(f"[SPOTIFY] Blocage 429 encore actif jusqu'à {until} : aucune requête Spotify avant.", flush=True)
 
     # Spotify : dernier état connu (mis à jour toutes les poll_interval secondes)
     sp = {'item': None, 'playing': False, 'progress': 0, 'fetched_at': 0.0}
