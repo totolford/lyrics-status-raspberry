@@ -36,8 +36,9 @@ $cfg | Add-Member -NotePropertyName token  -NotePropertyValue $Token -Force
 [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
 
 # 4. Musique jouée sur le PC (optionnel : YouTube, Deezer, VLC...). Désactiver : $env:LS_NO_MEDIA = 1
+#    Versions épinglées (3.2.1) pour rester compatibles avec les autres paquets winrt déjà installés.
 if (-not $env:LS_NO_MEDIA) {
-    & python -m pip install --quiet --disable-pip-version-check winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Storage.Streams
+    & python -m pip install --quiet --disable-pip-version-check winrt-runtime==3.2.1 winrt-Windows.Media.Control==3.2.1 winrt-Windows.Foundation==3.2.1 winrt-Windows.Foundation.Collections==3.2.1 winrt-Windows.Storage.Streams==3.2.1
     if ($LASTEXITCODE -ne 0) { Write-Host 'Musique du PC : paquets non installés (fonction optionnelle, le reste marche).' }
 }
 
