@@ -2,6 +2,7 @@
 import json
 import time
 import re
+import unicodedata
 import sys
 import base64
 import threading
@@ -37,51 +38,124 @@ def to_italic(text):
 _builtin_censor = []
 _censor_lock    = threading.Lock()
 _censor_regex   = None
+_censor_allow   = set()
+# Mots courants qui ressemblent à un mot de la liste une fois les accents ignorés (péter -> Peter)
+_DEFAULT_ALLOW  = {'peter', 'peters'}
 
-def _rebuild_censor_regex(extra_words):
-    global _censor_regex
+CENSOR_CACHE_PATH = Path(__file__).parent / 'censor_cache.txt'
+CENSOR_CACHE_MAX_AGE_S = 7 * 86400
+CENSOR_LIST_URL = 'https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/'
+# Filet de sécurité si ni le réseau ni le cache ne sont disponibles
+_FALLBACK_CENSOR = [
+    'fuck', 'shit', 'bitch', 'cunt', 'dick', 'pussy', 'asshole', 'bastard', 'whore', 'slut',
+    'nigga', 'nigger', 'faggot', 'motherfucker', 'cock', 'cum',
+    'putain', 'merde', 'connard', 'connasse', 'salope', 'pute', 'enculé', 'enculer', 'bite',
+    'couilles', 'foutre', 'pédé', 'nique', 'niquer', 'ntm', 'fdp', 'batard', 'bâtard',
+]
+
+# Lettre -> variantes acceptées (accents + écriture déguisée type sh1t, f@ck, $hit)
+_LOOKALIKES = {
+    'a': 'aàâäáãå4@', 'e': 'eéèêë3', 'i': 'iîïíì1!', 'o': 'oôöóòõ0', 'u': 'uùûüú',
+    'c': 'cç', 'y': 'yÿý', 'n': 'nñ', 's': 's5$', 't': 't7', 'b': 'b8', 'g': 'g9',
+}
+_SEP = r"[\s.\-_*]"  # séparateurs tolérés entre lettres : f.u.c.k, f u c k, f-u-c-k
+_SUFFIX = r"(?:s|es|ed|er|ers|ing|in|in'|é|és|ée|ées|e)?"  # pluriels, conjugaisons (mots >= 5 lettres)
+
+def _strip_accents(c):
+    return unicodedata.normalize('NFD', c)[0]
+
+def _word_pattern(word):
+    """Regex tolérante pour un mot : accents, leet, lettres étirées (fuuuck), séparateurs."""
+    letters = [c for c in word if c.isalpha()]
+    stretch = len(letters) >= 4  # mots courts (ass, cum...) : pas d'étirement
+    out = []
+    for ch in word:
+        if ch.isalpha():
+            base = _strip_accents(ch).lower()
+            chars = _LOOKALIKES.get(base, base)
+            if ch.lower() not in chars:
+                chars += ch.lower()
+            cls = '[' + ''.join(re.escape(c) for c in chars) + ']'
+            out.append(cls + ('+' if stretch else ''))
+        elif ch in " -_'’.":
+            out.append(r"['’]?" if ch in "'’" else _SEP + '+')
+        else:
+            out.append(re.escape(ch))
+    pat = (_SEP + '?').join(out) if stretch else ''.join(out)
+    return pat + (_SUFFIX if len(letters) >= 5 else '')
+
+def _rebuild_censor_regex(extra_words, allow_words=()):
+    global _censor_regex, _censor_allow
     with _censor_lock:
+        _censor_allow = _DEFAULT_ALLOW | {w.strip().lower() for w in allow_words if w.strip()}
         all_words = set(_builtin_censor) | {w.strip().lower() for w in extra_words if w.strip()}
         if not all_words:
             _censor_regex = None
             return
-        parts = [re.escape(w) for w in all_words]
+        parts = sorted({_word_pattern(w) for w in all_words}, key=len, reverse=True)
         pattern = r'(?<![a-zA-ZÀ-ÿ0-9])(' + '|'.join(parts) + r')(?![a-zA-ZÀ-ÿ0-9])'
         try:
             _censor_regex = re.compile(pattern, re.IGNORECASE)
-        except Exception:
+        except Exception as e:
+            print(f"[CENSURE] ✗ Regex invalide: {e}", flush=True)
             _censor_regex = None
 
-def load_builtin_censor(extra_words):
-    """Charge la liste LDNOOBW (FR + EN) en arrière-plan puis reconstruit la regex."""
-    global _builtin_censor
-    langs = ['fr', 'en']
-    base  = 'https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/'
+def _parse_word_list(text):
+    return {w.strip().lower() for w in text.split('\n') if w.strip() and not w.strip().startswith('#')}
+
+def _download_censor_words():
     words = set()
-    for lang in langs:
+    for lang in ('fr', 'en'):
         try:
-            r = requests.get(base + lang, timeout=10)
+            r = requests.get(CENSOR_LIST_URL + lang, timeout=10)
             if r.status_code == 200:
-                for w in r.text.split('\n'):
-                    w = w.strip().lower()
-                    if w and not w.startswith('#'):
-                        words.add(w)
+                words |= _parse_word_list(r.text)
         except Exception:
             pass
+    return words
+
+def load_builtin_censor(extra_words, allow_words=()):
+    """Charge la liste LDNOOBW (FR + EN) : cache local d'abord, puis réseau, puis liste de secours."""
+    global _builtin_censor
+    words = set()
+    fresh = False
+    try:
+        if CENSOR_CACHE_PATH.exists():
+            words = _parse_word_list(CENSOR_CACHE_PATH.read_text(encoding='utf-8'))
+            fresh = time.time() - CENSOR_CACHE_PATH.stat().st_mtime < CENSOR_CACHE_MAX_AGE_S
+    except Exception:
+        pass
+    if words:  # le cache est actif tout de suite, avant même d'attendre le réseau
+        _builtin_censor = list(words)
+        _rebuild_censor_regex(extra_words, allow_words)
+    if not fresh:
+        downloaded = _download_censor_words()
+        if downloaded:
+            words = downloaded
+            try:
+                CENSOR_CACHE_PATH.write_text('\n'.join(sorted(words)), encoding='utf-8')
+            except Exception:
+                pass
+    if not words:
+        words = set(_FALLBACK_CENSOR)
+        print("[CENSURE] ⚠ Liste automatique indisponible : liste de secours utilisée", flush=True)
     _builtin_censor = list(words)
-    _rebuild_censor_regex(extra_words)
-    count = len(_builtin_censor)
-    if count:
-        print(f"[CENSURE] ✓ {count} mots chargés (FR + EN)", flush=True)
-    else:
-        print("[CENSURE] ✗ Échec du chargement de la liste automatique", flush=True)
+    _rebuild_censor_regex(extra_words, allow_words)
+    print(f"[CENSURE] ✓ {len(_builtin_censor)} mots chargés", flush=True)
+
+def _mask(m):
+    word = m.group(0)
+    if word.lower() in _censor_allow:
+        return word
+    # un nombre ou un symbole seul (ex. "455" lu comme "ass") n'est pas un mot : on le laisse
+    return word if not any(c.isalpha() for c in word) else '***'
 
 def censor_text(text):
     with _censor_lock:
         rx = _censor_regex
     if not rx:
         return text
-    return rx.sub('***', text)
+    return rx.sub(_mask, text)
 
 def get_status_string(words):
     text = censor_text(words).replace('♪', '').strip()
@@ -367,14 +441,15 @@ def main():
     offset_ms     = int(config.get('settings', {}).get('send_time_offset_ms', 500))
     poll_interval = float(config.get('settings', {}).get('spotify_poll_interval_s', SPOTIFY_POLL_INTERVAL))
     extra_censor  = config.get('settings', {}).get('censor_words', [])
+    allow_censor  = config.get('settings', {}).get('censor_allow', [])
 
     # Chargement de la liste de censure automatique en arrière-plan
     threading.Thread(
         target=load_builtin_censor,
-        args=(extra_censor,),
+        args=(extra_censor, allow_censor),
         daemon=True,
     ).start()
-    _rebuild_censor_regex(extra_censor)  # applique déjà les mots perso en attendant
+    _rebuild_censor_regex(extra_censor, allow_censor)  # applique déjà les mots perso en attendant
 
     steam_cfg = config.get('steam', {})
     if steam_cfg.get('enabled') and steam_cfg.get('token'):
@@ -572,7 +647,7 @@ def main():
                 last_sent_status = instr
         elif active and active is not current_lyric:
             current_lyric  = active
-            split_parts    = split_line(active['words'])
+            split_parts    = split_line(censor_text(active['words']))
             split_idx      = 0
             split_shown_at = time.time()
             status = get_status_string(split_parts[0])

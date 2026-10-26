@@ -74,7 +74,7 @@ This project is a fork of the original [OvalQuilter/lyrics-status](https://githu
   - Searching for lyrics: `🔍 𝘛𝘪𝘵𝘭𝘦 — 𝘈𝘳𝘵𝘪𝘴𝘵`
   - Paused: `⏸ En pause`
   - Nothing playing: `Connecté`
-- Built-in censor list (FR + EN, 800+ words from LDNOOBW) + custom words
+- Built-in censor list (FR + EN, ~490 words from LDNOOBW, cached locally and refreshed weekly) + custom words. Also catches accent-less spellings (`pede`), leetspeak (`sh1t`), stretched letters (`fuuuck`), separators (`f.u.c.k`), plurals/conjugations (`bitches`); an offline fallback list is used if the download ever fails
 - Runs 24/7 as a **systemd service** — starts automatically on boot, survives terminal close
 - Official Spotify OAuth2 — token auto-refreshes, never expires
 
@@ -177,6 +177,7 @@ Save with `Ctrl+O`, exit with `Ctrl+X`.
 | `send_time_offset_ms` | Send offset in ms (default 500) |
 | `spotify_poll_interval_s` | How often to poll Spotify API in seconds (default 5) |
 | `censor_words` | Extra words to censor, e.g. `["word1", "word2"]` |
+| `censor_allow` | Words that must never be censored (false positives), e.g. `["con"]` |
 
 ### Step 6 — Authenticate with Spotify (one time only)
 

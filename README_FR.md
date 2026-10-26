@@ -74,7 +74,7 @@ Ce projet est un fork du userscript navigateur original [OvalQuilter/lyrics-stat
   - Recherche de paroles : `🔍 𝘛𝘪𝘵𝘳𝘦 — 𝘈𝘳𝘵𝘪𝘴𝘵𝘦`
   - En pause : `⏸ En pause`
   - Rien en cours : `Connecté`
-- Liste de censure intégrée (FR + EN, 800+ mots de LDNOOBW) + mots personnalisés
+- Liste de censure intégrée (FR + EN, ~490 mots LDNOOBW, mise en cache locale et rafraîchie chaque semaine) + mots perso. Détecte aussi les graphies sans accent (`pede`), le leetspeak (`sh1t`), les lettres étirées (`fuuuck`), les séparateurs (`f.u.c.k`), pluriels et conjugaisons (`bitches`) ; une liste de secours hors ligne est utilisée si le téléchargement échoue
 - Tourne 24h/24 en tant que **service systemd** — démarre automatiquement au boot, résiste à la fermeture du terminal
 - OAuth2 Spotify officiel — le token se rafraîchit automatiquement, n'expire jamais
 
@@ -177,6 +177,7 @@ Sauvegarde avec `Ctrl+O`, quitte avec `Ctrl+X`.
 | `send_time_offset_ms` | Décalage d'envoi en ms (défaut 500) |
 | `spotify_poll_interval_s` | Fréquence d'appel à l'API Spotify en secondes (défaut 5) |
 | `censor_words` | Mots supplémentaires à censurer, ex. `["mot1", "mot2"]` |
+| `censor_allow` | Mots à ne jamais censurer (faux positifs), ex. `["con"]` |
 
 ### Étape 6 — Authentification Spotify (une seule fois)
 
