@@ -428,6 +428,39 @@ def set_discord_status(token, text):
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
+# ── PRIORITÉ DES SOURCES ──────────────────────────────────────────────────────
+
+DEFAULT_PRIORITY = ['spotify', 'pc_media', 'game']
+
+def parse_priority(value):
+    """Ordre des sources dans config.json. Une source absente de la liste est désactivée."""
+    if not isinstance(value, list) or not value:
+        return list(DEFAULT_PRIORITY)
+    out = []
+    for v in value:
+        v = str(v).strip().lower()
+        if v not in DEFAULT_PRIORITY:
+            print(f"[CONFIG] Source inconnue dans priority: {v!r} (valeurs: {', '.join(DEFAULT_PRIORITY)})", flush=True)
+        elif v not in out:
+            out.append(v)
+    return out or list(DEFAULT_PRIORITY)
+
+def choose_source(priority, available):
+    """Première source disponible, dans l'ordre de priorité (None si aucune)."""
+    for src in priority:
+        if available.get(src):
+            return src
+    return None
+
+def format_elapsed(seconds):
+    if seconds < 60:
+        return ''
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}"
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+
 def main():
     if not CONFIG_PATH.exists():
         print(f"[ERREUR] {CONFIG_PATH} introuvable. Copie config.example.json vers config.json.", flush=True)
@@ -442,6 +475,7 @@ def main():
     poll_interval = float(config.get('settings', {}).get('spotify_poll_interval_s', SPOTIFY_POLL_INTERVAL))
     extra_censor  = config.get('settings', {}).get('censor_words', [])
     allow_censor  = config.get('settings', {}).get('censor_allow', [])
+    priority      = parse_priority(config.get('settings', {}).get('priority'))
 
     # Chargement de la liste de censure automatique en arrière-plan
     threading.Thread(
@@ -456,35 +490,29 @@ def main():
         steam_source.start_server(int(steam_cfg.get('port', STEAM_PORT)), steam_cfg['token'])
 
     print("=== Lyrics Status (Raspberry) démarré ===", flush=True)
+    print(f"[CONFIG] Priorité des sources : {' > '.join(priority)}", flush=True)
 
-    api_progress_ms   = 0
-    api_fetch_time    = 0.0
-    api_is_playing    = False
-    current_track_id  = None
-    current_track_name   = ''
-    current_artist_name  = ''
+    # Spotify : dernier état connu (mis à jour toutes les poll_interval secondes)
+    sp = {'item': None, 'playing': False, 'progress': 0, 'fetched_at': 0.0}
+    current_track_id    = None
+    current_track_name  = ''
+    current_artist_name = ''
+    track_started_at    = 0.0   # musique du PC sans position : on compte depuis le début de la piste
     # Conteneurs mutables partagés avec le thread de fetch
     lyrics_result  = [None]   # [0] = lyrics_data
     lyrics_loading = [False]  # [0] = fetch en cours
-    current_lyric     = None
-    split_parts    = []
-    split_idx      = 0
-    split_shown_at = 0.0
-    last_sent_status  = None
+    current_lyric      = None
+    split_parts        = []
+    split_idx          = 0
+    split_shown_at     = 0.0
+    last_sent_status   = None
     search_status_sent = False
-    paused_sent       = False
-    idle_sent         = False
-    last_spotify_poll = 0.0
-    game_state        = {'name': None, 'sent_at': 0.0, 'shown': False}
-
-    def show_game(game, now):
-        """Affiche le jeu (renvoyé périodiquement : le statut Discord expire après 1 min)."""
-        if (game != game_state['name'] or not game_state['shown']
-                or now - game_state['sent_at'] >= STATUS_REFRESH_S):
-            if game != game_state['name']:
-                print(f"[JEU] {game}", flush=True)
-            game_state.update(name=game, sent_at=now, shown=True)
-            set_discord_status(discord_token, f"🎮 {to_italic(censor_text(game))}")
+    last_spotify_poll  = 0.0
+    last_src           = None
+    last_game_name     = None
+    game_sent_at       = 0.0
+    idle_kind          = None   # 'connected' | 'pause' | 'cleared' : statut d'attente déjà envoyé
+    quiet              = False  # un jeu vient de finir et rien ne joue : statut laissé vide
 
     def _fetch_async(tid, tname, aname, dur):
         result = fetch_lyrics(tid, tname, aname, dur)
@@ -497,108 +525,128 @@ def main():
     while True:
         now = time.time()
 
-        # ── Jeu détecté sur le PC (la musique reste toujours prioritaire) ─────
-        game = steam_source.current_game()
-        if not game and game_state['name']:
-            print("[JEU] Jeu terminé.", flush=True)
-            game_state['name'] = None
-            if game_state['shown'] and not api_is_playing:
-                # Le jeu était affiché et rien ne joue : statut vidé, pas de « Pause »
-                set_discord_status(discord_token, None)
-                last_sent_status = None
-                paused_sent      = True
-                idle_sent        = True
-                game_state['shown'] = False
-
         # ── Appel API Spotify ─────────────────────────────────────────────────
-        if now - last_spotify_poll >= poll_interval:
+        if 'spotify' in priority and now - last_spotify_poll >= poll_interval:
             last_spotify_poll = now
-            token   = sp_token.get()
-            playing = fetch_currently_playing(token)
+            playing = fetch_currently_playing(sp_token.get())
+            if playing and playing.get('item'):
+                sp.update(item=playing['item'], playing=bool(playing.get('is_playing')),
+                          progress=playing.get('progress_ms', 0), fetched_at=time.time())
+            else:
+                sp.update(item=None, playing=False)
 
-            if not playing or not playing.get('item'):
-                api_is_playing = False
-                if game:
-                    show_game(game, now)
-                elif not idle_sent:
-                    idle_sent = True
-                    paused_sent = False
-                    set_discord_status(discord_token, 'Connected')
-                    last_sent_status = 'Connected'
+        # ── État envoyé par l'agent du PC (jeu, musique) ──────────────────────
+        snap  = steam_source.snapshot()
+        media = snap['media'] if 'pc_media' in priority else None
+        game  = snap['game'] if 'game' in priority else None
+
+        available = {
+            'spotify':  bool(sp['item'] and sp['playing']),
+            'pc_media': bool(media and media['playing']),
+            'game':     bool(game),
+        }
+        src = choose_source(priority, available)
+
+        # ── Changement de source : on repart d'un affichage propre ────────────
+        if src != last_src:
+            if src is None and last_src == 'game':
+                quiet = True            # fin de partie : statut vidé, pas de « Pause »
+            if src is not None:
+                quiet     = False
+                idle_kind = None
+                last_sent_status   = None
+                current_lyric      = None
+                search_status_sent = False
+                split_parts, split_idx, split_shown_at = [], 0, 0.0
+            last_src = src
+
+        # ── Rien à afficher : Connected / Pause / statut vide ─────────────────
+        if src is None:
+            desired = 'cleared' if quiet else ('pause' if sp['item'] else 'connected')
+            if desired != idle_kind:
+                idle_kind = desired
+                text = {'cleared': None, 'pause': '⏸ Pause', 'connected': 'Connected'}[desired]
+                set_discord_status(discord_token, text)
+                last_sent_status = text
+                if desired == 'connected':
                     print("[INFO] Aucune lecture en cours.", flush=True)
-                time.sleep(LYRIC_INTERVAL)
-                continue
-
-            idle_sent = False
-            track        = playing['item']
-            track_id     = track['id']
-            track_name   = track['name']
-            artist_name  = track['artists'][0]['name'] if track.get('artists') else ''
-            duration_ms  = track['duration_ms']
-            api_progress_ms = playing['progress_ms']
-            api_fetch_time  = time.time()
-            api_is_playing  = playing['is_playing']
-
-            # ── Changement de chanson ─────────────────────────────────────────
-            if track_id != current_track_id:
-                if current_track_id:
-                    with _cache_lock:
-                        _lyrics_cache.pop(current_track_id, None)
-                current_track_id    = track_id
-                current_track_name  = track_name
-                current_artist_name = artist_name
-                current_lyric       = None
-                split_parts         = []
-                split_idx           = 0
-                split_shown_at      = 0.0
-                paused_sent         = False
-                last_sent_status    = None
-                search_status_sent  = False
-                label = f"{track_name} — {artist_name}" if artist_name else track_name
-                print(f"[CHANSON] {label}", flush=True)
-
-                cached = cache_get(track_id)
-                if cached is not ...:
-                    # Paroles déjà en cache (pré-téléchargées) : instantané
-                    lyrics_result[0]  = cached
-                    lyrics_loading[0] = False
-                    tag = f"✓ {len(cached['lines'])} lignes ({cached['type']}, cache)" if cached else "✗ Introuvables (cache)"
-                    print(f"[PAROLES] {tag}", flush=True)
-                else:
-                    # Lancement du fetch asynchrone
-                    lyrics_result[0]  = None
-                    lyrics_loading[0] = True
-                    threading.Thread(
-                        target=_fetch_async,
-                        args=(track_id, track_name, artist_name, duration_ms),
-                        daemon=True,
-                    ).start()
-
-                # Pré-téléchargement de la file d'attente
-                threading.Thread(target=prefetch_queue, args=(sp_token,), daemon=True).start()
-
-        # ── Pas de lecture active ─────────────────────────────────────────────
-        if not api_is_playing:
-            if game:
-                show_game(game, now)
-            elif not paused_sent and not idle_sent:
-                paused_sent = True
-                set_discord_status(discord_token, '⏸ Pause')
-                last_sent_status = '⏸ Pause'
             time.sleep(LYRIC_INTERVAL)
             continue
 
-        paused_sent = False
-        if game_state['shown']:
-            # La musique reprend la main sur le jeu : on réaffiche paroles / titre
-            game_state['shown'] = False
-            last_sent_status   = None
-            current_lyric      = None
-            search_status_sent = False
+        # ── Jeu ───────────────────────────────────────────────────────────────
+        if src == 'game':
+            if game != last_game_name:
+                print(f"[JEU] {game}", flush=True)
+                last_game_name = game
+            since = format_elapsed(snap['elapsed_s'])
+            label = f"{game} · depuis {since}" if since else game
+            status = f"🎮 {to_italic(censor_text(label))}"
+            if status != last_sent_status or now - game_sent_at >= STATUS_REFRESH_S:
+                set_discord_status(discord_token, status)
+                last_sent_status = status
+                game_sent_at     = now
+            time.sleep(LYRIC_INTERVAL)
+            continue
+        last_game_name = None
 
-        # ── Estimation locale de la progression ───────────────────────────────
-        elapsed_ms  = (time.time() - api_fetch_time) * 1000
-        progress_ms = int(api_progress_ms + elapsed_ms)
+        # ── Musique (Spotify ou lecteur du PC) ────────────────────────────────
+        if src == 'spotify':
+            track       = sp['item']
+            track_id    = track['id']
+            track_name  = track['name']
+            artist_name = track['artists'][0]['name'] if track.get('artists') else ''
+            duration_ms = track['duration_ms']
+            progress_ms = int(sp['progress'] + (now - sp['fetched_at']) * 1000)
+        else:
+            track_name  = media['title']
+            artist_name = media['artist']
+            duration_ms = media['duration_ms']
+            track_id    = f"pc:{artist_name}|{track_name}".lower()
+
+        # ── Changement de chanson ─────────────────────────────────────────────
+        if track_id != current_track_id:
+            if current_track_id:
+                with _cache_lock:
+                    _lyrics_cache.pop(current_track_id, None)
+            current_track_id    = track_id
+            current_track_name  = track_name
+            current_artist_name = artist_name
+            current_lyric       = None
+            split_parts         = []
+            split_idx           = 0
+            split_shown_at      = 0.0
+            last_sent_status    = None
+            search_status_sent  = False
+            track_started_at    = now
+            label = f"{track_name} — {artist_name}" if artist_name else track_name
+            print(f"[CHANSON] {label}" + ("" if src == 'spotify' else "  (lecteur du PC)"), flush=True)
+
+            cached = cache_get(track_id)
+            if cached is not ...:
+                # Paroles déjà en cache (pré-téléchargées) : instantané
+                lyrics_result[0]  = cached
+                lyrics_loading[0] = False
+                tag = f"✓ {len(cached['lines'])} lignes ({cached['type']}, cache)" if cached else "✗ Introuvables (cache)"
+                print(f"[PAROLES] {tag}", flush=True)
+            else:
+                # Lancement du fetch asynchrone
+                lyrics_result[0]  = None
+                lyrics_loading[0] = True
+                threading.Thread(
+                    target=_fetch_async,
+                    args=(track_id, track_name, artist_name, duration_ms),
+                    daemon=True,
+                ).start()
+
+            if src == 'spotify':
+                # Pré-téléchargement de la file d'attente
+                threading.Thread(target=prefetch_queue, args=(sp_token,), daemon=True).start()
+
+        if src == 'pc_media':
+            if media['position_ms'] is not None:
+                progress_ms = int(media['position_ms'] + (now - media['received_at']) * 1000)
+            else:
+                progress_ms = int((now - track_started_at) * 1000)
 
         # ── Fetch en cours : envoie 🔍 une seule fois ─────────────────────────
         if lyrics_loading[0]:
@@ -612,19 +660,8 @@ def main():
             time.sleep(LYRIC_INTERVAL)
             continue
 
-        # ── Pas de paroles trouvées ───────────────────────────────────────────
-        if not lyrics_result[0]:
-            title  = to_italic(censor_text(current_track_name or ''))
-            artist = f" — {to_italic(censor_text(current_artist_name))}" if current_artist_name else ''
-            status = f"♪ {title}{artist} ♪"
-            if status != last_sent_status:
-                set_discord_status(discord_token, status)
-                last_sent_status = status
-            time.sleep(LYRIC_INTERVAL)
-            continue
-
-        # ── Paroles non synchronisées ─────────────────────────────────────────
-        if lyrics_result[0]['type'] == 'unsynced':
+        # ── Pas de paroles trouvées, ou non synchronisées : titre — artiste ───
+        if not lyrics_result[0] or lyrics_result[0]['type'] == 'unsynced':
             title  = to_italic(censor_text(current_track_name or ''))
             artist = f" — {to_italic(censor_text(current_artist_name))}" if current_artist_name else ''
             status = f"♪ {title}{artist} ♪"

@@ -15,6 +15,7 @@
     "send_time_offset_ms":    500,
     "spotify_poll_interval_s": 5,
     "censor_words": [],
-    "censor_allow": []
+    "censor_allow": [],
+    "priority": ["spotify", "pc_media", "game"]
   }
 }

@@ -101,6 +101,45 @@ Si l'agent s'arrête, le statut jeu disparaît après ~20 s. Les raccourcis non-
 
 ---
 
+## Priorité des sources
+
+`settings.priority` dans `config.json` décide de ce qui s'affiche. La **première source disponible** de la liste gagne :
+
+| Source | Signification |
+|---|---|
+| `spotify` | Spotify joue (paroles) |
+| `pc_media` | Musique jouée sur le PC hors Spotify (YouTube, Deezer, VLC…) — paroles aussi |
+| `game` | Un jeu tourne sur le PC |
+
+```json
+"priority": ["spotify", "pc_media", "game"]
+```
+Par défaut comme ci-dessus (musique d'abord). Mets `game` en premier pour toujours afficher ton jeu ; **retire une source de la liste pour la désactiver**. Quand rien n'est disponible : `Connected` (ou `⏸ Pause`, ou statut laissé vide juste après la fin d'un jeu).
+
+---
+
+## Agent Windows : installation en une commande et mise à jour automatique
+
+Sur ton PC, dans PowerShell (remplace l'IP et le mot de passe = `steam.token` du `config.json` du Pi) :
+
+```powershell
+irm "http://IP_DU_PI:8765/install.ps1?token=TON_MOT_DE_PASSE" | iex
+```
+Il installe/trouve Python, télécharge l'agent, écrit `agent_config.json` (tes réglages existants, comme la clé Apex, sont conservés), installe les paquets optionnels de la musique du PC et crée une tâche invisible lancée à l'ouverture de session. Relance-le à tout moment pour réparer. L'agent **se met ensuite à jour tout seul depuis le Pi** toutes les 30 min (le Pi sert la version de son dépôt après `git pull`) et refuse d'installer un fichier qui ne compile pas. Pour ignorer les paquets de la musique du PC : `$env:LS_NO_MEDIA = 1` avant la commande.
+
+> L'agent fait confiance au code servi par ton Pi : à n'utiliser que sur un réseau et un Pi que tu contrôles.
+
+## Détails affichés avec le jeu
+
+`🎮 Jeu · détails · depuis 1h20` (temps depuis que l'agent voit le jeu). Intégrés : CS2 (score/carte), War Thunder, Roblox, Arma Reforger (serveur), Valorant, Apex (rang), League of Legends (champion, KDA, temps), Minecraft Java (serveur ou Solo), FiveM (nom du serveur via le titre de la fenêtre). Pour ajouter tes jeux/logs sans code, `custom_details.json` à côté de l'agent :
+
+```json
+{ "monjeu.exe": { "name": "Mon Jeu", "log": "%APPDATA%/MonJeu/*.log", "regex": "Serveur: (.+)" } }
+```
+(`regex` capture le texte à afficher dans le fichier de log le plus récent.)
+
+---
+
 ## Installation
 
 > Compatible avec Raspberry Pi Zero 2W, 3, 4, 5 — Raspberry Pi OS Lite ou Desktop.
@@ -261,6 +300,9 @@ lyrics-status-Best-raspberry/
 ├── README_FR.md                ← ce fichier
 └── raspberry/
     ├── lyrics_status.py        ← daemon (boucle principale)
+    ├── steam_source.py         ← reçoit jeu/musique du PC, sert les mises à jour
+    ├── steam_agent.py          ← agent PC (jeu, détails, musique du PC) — se met à jour seul
+    ├── install_agent.ps1       ← installateur Windows servi par le Pi
     ├── auth.py                 ← OAuth2 Spotify (une seule fois)
     ├── config.example.json     ← template de config (sans secrets)
     ├── config.json             ← ta config (ignorée par git)

@@ -101,6 +101,45 @@ If the agent stops, the game status disappears after ~20 s. Non-Steam shortcuts 
 
 ---
 
+## Priority of sources
+
+`settings.priority` in `config.json` decides what is shown. The **first available** source in the list wins:
+
+| Source | Meaning |
+|---|---|
+| `spotify` | Spotify is playing (lyrics) |
+| `pc_media` | Music playing on the PC outside Spotify (YouTube, Deezer, VLC…) — lyrics too |
+| `game` | A game is running on the PC |
+
+```json
+"priority": ["spotify", "pc_media", "game"]
+```
+Default as above (music first). Put `game` first to always show your game; **leave a source out to disable it**. When nothing is available the status is `Connected` (or `⏸ Pause`, or left empty right after a game ends).
+
+---
+
+## Windows agent: one-command install and auto-update
+
+On your PC, in PowerShell (replace the IP and the password from `steam.token` in the Pi's `config.json`):
+
+```powershell
+irm "http://PI_IP:8765/install.ps1?token=YOUR_PASSWORD" | iex
+```
+It installs/finds Python, downloads the agent, writes `agent_config.json` (existing settings such as the Apex key are kept), installs the optional PC-music packages, and registers a hidden task that starts at logon. Run it again at any time to repair. The agent then **updates itself from the Pi** every 30 min (the Pi serves the version in its own `git pull`ed repo) and refuses to install a file that doesn't compile. Skip the PC-music packages with `$env:LS_NO_MEDIA = 1` before the command.
+
+> The agent trusts code served by your Pi: only use it on a network and a Pi you control.
+
+## Details shown with the game
+
+`🎮 Game · details · depuis 1h20` (time since the game started being seen by the agent). Built in: CS2 (score/map), War Thunder, Roblox, Arma Reforger (server), Valorant, Apex (rank), League of Legends (champion, KDA, time), Minecraft Java (server or Solo), FiveM (server name from the window title). Add your own games/logs without code in `custom_details.json` next to the agent:
+
+```json
+{ "mygame.exe": { "name": "My Game", "log": "%APPDATA%/MyGame/*.log", "regex": "Server: (.+)" } }
+```
+(`regex` captures the text to display from the newest matching log file.)
+
+---
+
 ## Setup
 
 > Compatible with Raspberry Pi Zero 2W, 3, 4, 5 — Raspberry Pi OS Lite or Desktop.
@@ -261,6 +300,9 @@ lyrics-status-Best-raspberry/
 ├── README_FR.md                ← French version
 └── raspberry/
     ├── lyrics_status.py        ← daemon (main loop)
+    ├── steam_source.py         ← receives game/PC-music from the agent, serves updates
+    ├── steam_agent.py          ← PC agent (game, details, PC music) — auto-updates
+    ├── install_agent.ps1       ← Windows installer served by the Pi
     ├── auth.py                 ← Spotify OAuth2 (one time)
     ├── config.example.json     ← config template (no secrets)
     ├── config.json             ← your config (git-ignored)
